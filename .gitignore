@@ -1,0 +1,25 @@
+# Personal build notes — not for the public repo
+PROJECT7-SUMMARY.md
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+crash.log
+ terraform/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local model / data scratch
+mlruns/
+data/
+*.pkl
+
+#Implementation specific
+IMPLEMENTATION-PLAN.md

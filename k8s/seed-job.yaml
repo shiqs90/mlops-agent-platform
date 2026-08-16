@@ -1,0 +1,68 @@
+# One-shot Job that loads the banking dataset.
+#
+# No image build: the script arrives via ConfigMap and psycopg2 is pip-installed at
+# start. That is a legitimate shortcut for a bootstrap job that runs a handful of
+# times — it is NOT the pattern for the MCP servers or Nova, which get real images
+# in Artifact Registry. The tradeoff is a ~20s pip install on every run and no
+# pinned dependency tree.
+#
+# Create the ConfigMap from the script first (it is not checked in as YAML, so the
+# .py stays lintable and diffable):
+#
+#   kubectl create configmap seed-script -n nova --from-file=db/seed.py \
+#     --dry-run=client -o yaml | kubectl apply -f -
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-banking-data
+  namespace: nova
+spec:
+  # Don't retry a failing seed six times — a bad script fails identically each
+  # time, and re-running TRUNCATE against a half-loaded table wastes minutes.
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet --no-cache-dir 'psycopg2-binary==2.9.*'
+              python /scripts/seed.py
+          env:
+            - name: PGHOST
+              value: postgres.nova.svc.cluster.local
+            - name: PGDATABASE
+              value: nova
+            - name: PGUSER
+              value: nova
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials   # materialised by ExternalSecret
+                  key: password
+            # The seed script can't run `git rev-parse` inside the container, so
+            # lineage comes from here. Set it to the real SHA at apply time to make
+            # "which load produced this row" answerable.
+            - name: SOURCE_COMMIT
+              value: "unknown"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              # 200k rows are built in memory as a TSV buffer before COPY. Roughly
+              # 30 MB of strings, but Python's overhead on top is what sets this.
+              memory: 1Gi
+      volumes:
+        - name: scripts
+          configMap:
+            name: seed-script

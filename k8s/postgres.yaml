@@ -1,0 +1,90 @@
+# Postgres for Nova: the banking dataset the MCP connectors read, and the
+# eval_runs / eval_results tables the Evaluation Hub writes (Phase 4).
+#
+# In-cluster StatefulSet rather than Cloud SQL. Managed is the right production
+# answer; in-cluster is cheaper and is a real StatefulSet to operate. Say that
+# tradeoff out loud in interview rather than implying Cloud SQL was considered
+# and rejected on technical grounds.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nova
+---
+# Headless Service — gives the pod a stable DNS name (postgres-0.postgres.nova.svc)
+# which is what makes a StatefulSet different from a Deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: nova
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: nova
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: nova
+            - name: POSTGRES_USER
+              value: nova
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            # Postgres refuses to initialise into a non-empty dir. The PVC mounts
+            # with a lost+found, so point PGDATA at a subdirectory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "nova", "-d", "nova"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "nova", "-d", "nova"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
