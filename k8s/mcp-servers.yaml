@@ -1,0 +1,124 @@
+# Three MCP connectors. Same image, different entrypoint per Deployment.
+#
+# Replace IMAGE_TAG below, or apply through:
+#   sed "s|IMAGE_TAG|$(git rev-parse --short HEAD 2>/dev/null || date +%s)|g" \
+#     k8s/mcp-servers.yaml | kubectl apply -f -
+#
+# Tagging by commit rather than :latest is deliberate — with :latest, a rollout that
+# changes nothing visible in the manifest is indistinguishable from one that changed
+# the tool descriptions, and "which build is live" becomes unanswerable. That
+# question is one of this project's stated success criteria.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-accounts
+  namespace: nova
+spec:
+  selector: {app: mcp-accounts}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-accounts
+  namespace: nova
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mcp-accounts}
+  template:
+    metadata:
+      labels: {app: mcp-accounts}
+    spec:
+      containers:
+        - name: server
+          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          command: ["python", "accounts.py"]
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: PGHOST, value: postgres.nova.svc.cluster.local}
+            - {name: PGDATABASE, value: nova}
+            - {name: PGUSER, value: nova}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-transactions
+  namespace: nova
+spec:
+  selector: {app: mcp-transactions}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-transactions
+  namespace: nova
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mcp-transactions}
+  template:
+    metadata:
+      labels: {app: mcp-transactions}
+    spec:
+      containers:
+        - name: server
+          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          command: ["python", "transactions.py"]
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: PGHOST, value: postgres.nova.svc.cluster.local}
+            - {name: PGDATABASE, value: nova}
+            - {name: PGUSER, value: nova}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-products
+  namespace: nova
+spec:
+  selector: {app: mcp-products}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-products
+  namespace: nova
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mcp-products}
+  template:
+    metadata:
+      labels: {app: mcp-products}
+    spec:
+      containers:
+        - name: server
+          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          command: ["python", "products.py"]
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: PGHOST, value: postgres.nova.svc.cluster.local}
+            - {name: PGDATABASE, value: nova}
+            - {name: PGUSER, value: nova}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 384Mi}

@@ -1,0 +1,196 @@
+{
+  "run_id": "EVAL-20260817-111408",
+  "target": "http://localhost:8000",
+  "judge_model": "claude-haiku-4-5",
+  "aggregate": {
+    "tool_selection": 1.0,
+    "parameter_accuracy": 1.0,
+    "groundedness": 0.9166666666666666
+  },
+  "total_cost_usd": 0.070869,
+  "results": [
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-001",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.005839,
+      "unsupported": [],
+      "trace_id": "a9ac39b7-9e1f-4187-b09e-73cbbbfb54fa",
+      "tools_called": [
+        "check_balance"
+      ],
+      "latency_ms": 3002
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-002",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.005660999999999999,
+      "unsupported": [],
+      "trace_id": "2b16a61d-b8d3-4e82-95b5-b74feb048bee",
+      "tools_called": [
+        "get_cards"
+      ],
+      "latency_ms": 1828
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-003",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.006482,
+      "unsupported": [],
+      "trace_id": "27f66b6a-bd82-4845-b4cb-a374bf3cf715",
+      "tools_called": [
+        "query_transactions"
+      ],
+      "latency_ms": 2362
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-004",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 0.0,
+      "cost_per_request": 0.006326,
+      "unsupported": [
+        "spent 782.99 AED",
+        "Utilities: 668.71 AED",
+        "Groceries: 114.28 AED"
+      ],
+      "trace_id": "3083ca15-f1f5-417d-934e-1bac2c795e5b",
+      "tools_called": [
+        "spending_by_category"
+      ],
+      "latency_ms": 2151
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-005",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.006252,
+      "unsupported": [],
+      "trace_id": "29777727-da1e-4def-9bec-8f8c6195d247",
+      "tools_called": [
+        "query_transactions"
+      ],
+      "latency_ms": 2092
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-006",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.0056749999999999995,
+      "unsupported": [],
+      "trace_id": "1cbb3c8b-ae11-485f-ada7-85975c4255c2",
+      "tools_called": [
+        "get_loans"
+      ],
+      "latency_ms": 1982
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-007",
+      "shape": "single",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.00566,
+      "unsupported": [],
+      "trace_id": "88e5ee09-193a-4a77-a22d-399ccccd77f3",
+      "tools_called": [
+        "list_accounts"
+      ],
+      "latency_ms": 2405
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-008",
+      "shape": "multi",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.007017,
+      "unsupported": [],
+      "trace_id": "007f317e-e07c-47c6-bb94-49b92e6871f3",
+      "tools_called": [
+        "check_balance",
+        "query_transactions"
+      ],
+      "latency_ms": 6636
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-009",
+      "shape": "memory",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.007115000000000001,
+      "unsupported": [],
+      "trace_id": "343bedc3-ea34-4512-948c-a38784a3463a",
+      "tools_called": [
+        "query_transactions"
+      ],
+      "latency_ms": 2942
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-010",
+      "shape": "memory",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.0062439999999999996,
+      "unsupported": [],
+      "trace_id": "35d6bcd5-1f45-47dd-8788-becf501230ae",
+      "tools_called": [
+        "check_balance"
+      ],
+      "latency_ms": 1673
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-011",
+      "shape": "refuse",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.005677,
+      "unsupported": [],
+      "trace_id": "c4428c47-3e2f-428b-ac47-694fb3cefe1d",
+      "tools_called": [
+        "check_balance"
+      ],
+      "latency_ms": 1976
+    },
+    {
+      "run_id": "EVAL-20260817-111408",
+      "question_id": "gs-012",
+      "shape": "refuse",
+      "tool_selection": 1.0,
+      "parameter_accuracy": 1.0,
+      "groundedness": 1.0,
+      "cost_per_request": 0.002921,
+      "unsupported": [],
+      "trace_id": "fcfc0215-668f-4e3a-a325-6e9bb212660f",
+      "tools_called": [],
+      "latency_ms": 1382
+    }
+  ]
+}

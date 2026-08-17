@@ -58,6 +58,53 @@ resource "google_secret_manager_secret_version" "postgres_password" {
   }
 }
 
+# Anthropic API key. Container only — the value is yours, not generated, so Terraform
+# never sees it. Add it after apply:
+#
+#   printf '%s' "$ANTHROPIC_API_KEY" \
+#     | gcloud secrets versions add nova-anthropic-api-key --data-file=- \
+#         --project=mlops-lifecycle-p7-gke
+#
+# printf rather than echo: echo appends a newline, which becomes part of the key and
+# produces a 401 that looks like a wrong key rather than a formatting bug.
+resource "google_secret_manager_secret" "anthropic_api_key" {
+  secret_id = "nova-anthropic-api-key"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [labels, annotations]
+  }
+}
+
+# Langfuse keys. Container only — values come from cloud.langfuse.com after apply:
+#
+#   printf '%s' "pk-lf-..." | gcloud secrets versions add nova-langfuse-public-key  --data-file=- --project=mlops-lifecycle-p7-gke
+#   printf '%s' "sk-lf-..." | gcloud secrets versions add nova-langfuse-secret-key  --data-file=- --project=mlops-lifecycle-p7-gke
+resource "google_secret_manager_secret" "langfuse_public_key" {
+  secret_id = "nova-langfuse-public-key"
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [labels, annotations]
+  }
+}
+
+resource "google_secret_manager_secret" "langfuse_secret_key" {
+  secret_id = "nova-langfuse-secret-key"
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [labels, annotations]
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Identity for External Secrets Operator
 #
@@ -76,6 +123,24 @@ resource "google_service_account" "external_secrets" {
 # identity stays legible.
 resource "google_secret_manager_secret_iam_member" "eso_postgres" {
   secret_id = google_secret_manager_secret.postgres_password.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.external_secrets.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "eso_anthropic" {
+  secret_id = google_secret_manager_secret.anthropic_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.external_secrets.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "eso_langfuse_public" {
+  secret_id = google_secret_manager_secret.langfuse_public_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.external_secrets.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "eso_langfuse_secret" {
+  secret_id = google_secret_manager_secret.langfuse_secret_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.external_secrets.email}"
 }

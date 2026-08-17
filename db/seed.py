@@ -138,9 +138,14 @@ def main() -> None:
     # COPY rather than INSERT: 200k rows one at a time takes minutes, COPY takes
     # seconds. Built in memory as TSV, then streamed in one call.
     buf = io.StringIO()
+    net = {a[0]: Decimal(0) for a in accounts}   # account_id -> running balance
+
     for i in range(1, N_TRANSACTIONS + 1):
         acct = f"ACC-{rng.randrange(1, N_ACCOUNTS + 1):05d}"
         category, direction, lo, hi, monthly = rng.choice(SPEND)
+        amount = money(rng, lo, hi)
+        net[acct] += amount if direction == "credit" else -amount
+
         offset = rng.randrange(0, MONTHS_HISTORY * 30)
         txn_date = ANCHOR_DATE - timedelta(days=offset)
         if monthly:
@@ -148,12 +153,39 @@ def main() -> None:
             # land this month" has a findable answer rather than a random one.
             txn_date = txn_date.replace(day=25 if category == "salary" else 1)
         buf.write("\t".join([
-            f"TXN-{i:07d}", acct, txn_date.isoformat(), str(money(rng, lo, hi)),
+            f"TXN-{i:07d}", acct, txn_date.isoformat(), str(amount),
             direction, category,
             f"{category.replace('_', ' ').title()} payment",
             rng.choice(["Emirates NBD", "ADCB", "Carrefour", "DEWA", "Talabat", "\\N"]),
             run_id,
         ]) + "\n")
+
+    # ---- opening deposits ------------------------------------------------
+    # Assigning transactions to random accounts leaves ~13% of them holding a balance
+    # the account type does not permit: a savings or fixed-deposit account cannot be
+    # overdrawn at all, and a current account cannot pass its overdraft limit.
+    #
+    # The wrong fix is clamping the balance — that breaks `balance == sum(transactions)`,
+    # and Nova would answer "your balance is X" and "your transactions sum to Y" in one
+    # conversation and contradict itself.
+    #
+    # The right fix is the deposit a real account would have opened with. Only accounts
+    # that actually breach their floor get one, so current accounts sitting legitimately
+    # overdrawn within their limit are left alone — those are the interesting cases for
+    # the golden set's overdraft questions.
+    txn_id = N_TRANSACTIONS
+    for account_id, _cust, acct_type, _ccy, _bal, overdraft, _status, opened_at, _run in accounts:
+        floor = -overdraft if acct_type == "current" else Decimal(0)
+        if net[account_id] >= floor:
+            continue
+        txn_id += 1
+        deposit = (floor - net[account_id]) + money(rng, 1_000, 80_000)
+        net[account_id] += deposit
+        buf.write("\t".join([
+            f"TXN-{txn_id:07d}", account_id, opened_at.isoformat(), str(deposit),
+            "credit", "opening_balance", "Account opening deposit", "\\N", run_id,
+        ]) + "\n")
+
     buf.seek(0)
     cur.copy_from(
         buf, "transactions",

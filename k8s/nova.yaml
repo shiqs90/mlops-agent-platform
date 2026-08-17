@@ -1,0 +1,86 @@
+# Nova — the agent API.
+#
+# Apply through sed, same as the connectors:
+#   sed "s|IMAGE_TAG|$TAG|g" k8s/nova.yaml | kubectl apply -f -
+#
+# Plain Deployment for now. In E1 this becomes an Argo Rollouts blue-green Rollout
+# with the evaluation as its promotion gate — that swap is the whole point of the
+# project, so it is deliberately NOT anticipated here. A Rollout with no analysis
+# attached would look like progress while proving nothing.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova
+  namespace: nova
+spec:
+  selector: {app: nova}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova
+  namespace: nova
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: nova}
+  template:
+    metadata:
+      labels: {app: nova}
+    spec:
+      containers:
+        - name: nova
+          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova:IMAGE_TAG
+          ports: [{containerPort: 8000}]
+          env:
+            # Models are separate variables even though both start as Haiku. The judge
+            # moves to Sonnet once the agent behaves — a config change, not a code
+            # change, because the judge model is part of what an eval run is versioned by.
+            - {name: NOVA_AGENT_MODEL, value: "claude-haiku-4-5"}
+            - {name: NOVA_JUDGE_MODEL, value: "claude-haiku-4-5"}
+
+            # Runaway protection. RECURSION_LIMIT is the one that caps cost: a
+            # tool-calling round is ~2 graph steps, so 15 allows ~7 rounds — generous
+            # for a two-tool question, far short of a loop.
+            - {name: NOVA_RECURSION_LIMIT, value: "15"}
+            - {name: NOVA_MAX_TOKENS, value: "2048"}
+            - {name: NOVA_REQUEST_TIMEOUT, value: "60"}
+            - {name: NOVA_CLIENT_TIMEOUT, value: "30"}
+            - {name: NOVA_MAX_RETRIES, value: "2"}
+
+            - {name: MCP_ACCOUNTS_URL, value: "http://mcp-accounts:8080/mcp"}
+            - {name: MCP_TRANSACTIONS_URL, value: "http://mcp-transactions:8080/mcp"}
+            - {name: MCP_PRODUCTS_URL, value: "http://mcp-products:8080/mcp"}
+            - {name: REDIS_URL, value: "redis://redis.nova.svc.cluster.local:6379"}
+
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: {name: anthropic-api-key, key: api-key}
+
+            # Langfuse. optional: true means a missing Secret leaves the vars unset
+            # and Nova starts untraced, rather than the pod hanging in
+            # CreateContainerConfigError. Tracing must not be able to take down the
+            # thing it traces.
+            - {name: LANGFUSE_HOST, value: "https://cloud.langfuse.com"}
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef: {name: langfuse-keys, key: public-key, optional: true}
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: langfuse-keys, key: secret-key, optional: true}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            # Generous delay: startup opens three MCP sessions and discovers tools
+            # across them before serving. Too tight a probe restarts the pod
+            # mid-handshake, which looks like a crashloop rather than a slow start.
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 60
+            periodSeconds: 30

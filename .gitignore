@@ -21,5 +21,7 @@ mlruns/
 data/
 *.pkl
 
-#Implementation specific
+#Implementation/status specific
 IMPLEMENTATION-PLAN.md
+docs/DEBUGGING.md
+status.md

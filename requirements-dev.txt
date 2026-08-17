@@ -1,0 +1,13 @@
+# Local development only. Nothing here ships — Nova and the MCP servers install
+# their own pinned requirements inside their images (nova/requirements.txt,
+# mcp-servers/requirements.txt).
+#
+# This is for work done from the laptop: poking at Postgres, calling endpoints,
+# and from Phase 4 onward, running the Evaluation Hub's scoring logic locally
+# before it goes into a Job.
+
+psycopg2-binary==2.9.*     # query the seeded data through a port-forward
+httpx==0.28.*              # call Nova / the MCP servers
+pyyaml==6.*                # golden + regression question sets
+anthropic>=0.40            # the LLM judge in eval/run_eval.py
+ruff==0.9.*                # lint

@@ -1,0 +1,105 @@
+# Golden set — coverage. Does Nova handle the shapes of question it should?
+#
+# NOT hand-authored Q&A pairs. Each case carries the question plus a one-line
+# annotation of what SHOULD happen; there is no expected answer text, because the
+# answer would rot the moment the data or the phrasing changed. Two of the four
+# metrics are string comparisons against these annotations; groundedness needs no
+# annotation at all — it is judged against what the tool actually returned.
+#
+# Four shapes are deliberately covered:
+#   single    — one tool, the base case
+#   multi     — two tools in one turn, tests sequencing
+#   memory    — reference resolution across turns ("that account", "and June?")
+#   refuse    — should NOT invent an answer when the data isn't there
+#
+# Account facts these are pinned to (seed ING-20260801-42, ANCHOR_DATE 2026-08-01):
+#   ACC-00004  current, balance 185254.95, overdraft 7126.26
+#   ACC-00003  savings, negative-balance case is now impossible post-fix
+#   ACC-00001  savings, balance 183732.46
+
+- id: gs-001
+  shape: single
+  question: "What is the balance on account ACC-00004?"
+  expect_tools: [check_balance]
+  expect_params: {account_id: ACC-00004}
+
+- id: gs-002
+  shape: single
+  question: "Which cards are linked to account ACC-00004?"
+  expect_tools: [get_cards]
+  expect_params: {account_id: ACC-00004}
+
+- id: gs-003
+  shape: single
+  question: "Show me the transactions on ACC-00004 for July 2026."
+  expect_tools: [query_transactions]
+  expect_params: {account_id: ACC-00004, start_date: "2026-07-01", end_date: "2026-07-31"}
+
+- id: gs-004
+  shape: single
+  question: "How much did account ACC-00004 spend by category in June 2026?"
+  expect_tools: [spending_by_category]
+  expect_params: {account_id: ACC-00004, start_date: "2026-06-01", end_date: "2026-06-30"}
+
+- id: gs-005
+  shape: single
+  # Relative date. The system prompt pins "today" to 2026-08-01, so "last month"
+  # must resolve to July — this is the parameter_accuracy case that fails most often.
+  question: "Did my salary land last month on ACC-00004?"
+  expect_tools: [query_transactions]
+  expect_params: {account_id: ACC-00004, start_date: "2026-07-01", end_date: "2026-07-31"}
+
+- id: gs-006
+  shape: single
+  question: "What loans does customer CUS-00012 have?"
+  expect_tools: [get_loans]
+  expect_params: {customer_id: CUS-00012}
+
+- id: gs-007
+  shape: single
+  question: "List every account belonging to customer CUS-00012."
+  expect_tools: [list_accounts]
+  expect_params: {customer_id: CUS-00012}
+
+- id: gs-008
+  shape: multi
+  # Two different tools in one turn. Order isn't asserted — only that both ran.
+  question: "Is ACC-00004 within its overdraft limit, and did any salary arrive in July 2026?"
+  expect_tools: [check_balance, query_transactions]
+  expect_params: {account_id: ACC-00004}
+
+- id: gs-009
+  shape: memory
+  # Two-turn case. The setup runs first, then the question — which names no account.
+  # Tests that history resolves the reference AND that the tool is still called
+  # rather than the earlier answer being reused.
+  setup: "What is the balance on ACC-00004?"
+  question: "And what were its transactions in June 2026?"
+  expect_tools: [query_transactions]
+  expect_params: {account_id: ACC-00004, start_date: "2026-06-01", end_date: "2026-06-30"}
+
+- id: gs-010
+  shape: memory
+  # The stale-answer regression (war story #18). Same question twice; the second
+  # MUST still call the tool.
+  setup: "What is the balance on ACC-00004?"
+  question: "What is the balance on ACC-00004?"
+  expect_tools: [check_balance]
+  expect_params: {account_id: ACC-00004}
+
+- id: gs-011
+  shape: refuse
+  # Nonexistent account. The tool returns an error; the agent must report that
+  # rather than inventing a balance. Groundedness is the metric that catches a
+  # fabricated number here.
+  question: "What is the balance on account ACC-99999?"
+  expect_tools: [check_balance]
+  expect_params: {account_id: ACC-99999}
+
+- id: gs-012
+  shape: refuse
+  # Out of scope entirely — no tool covers exchange rates. Should decline rather
+  # than guess, and should not call an unrelated tool.
+  question: "What is today's USD to AED exchange rate?"
+  expect_tools: []
+  expect_params: {}

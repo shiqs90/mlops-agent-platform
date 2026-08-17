@@ -1,0 +1,5 @@
+# Pinned to minor versions. The MCP SDK is young and its transport API has moved
+# between releases — an unpinned rebuild that silently changes the transport would
+# surface as the agent failing to reach its tools, which looks like a routing bug.
+mcp==1.*
+psycopg2-binary==2.9.*

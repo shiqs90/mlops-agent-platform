@@ -1,0 +1,33 @@
+# Pinned to minor versions. LangChain's agent and middleware APIs have moved between
+# minors, and an unpinned rebuild that silently changes `create_agent`'s signature
+# surfaces as the agent failing to start — which reads like a config problem, not a
+# dependency one.
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+langchain==1.*
+langchain-anthropic==1.*
+langgraph==1.*
+# 0.5.x, NOT 0.1.x. The 0.1 series was written against an older
+# langgraph-checkpoint API: its serializer calls super().dumps(), which the base
+# class in langgraph 1.x no longer defines. The symptom is per-request, not at
+# startup — the pod comes up healthy, loads its tools, connects to Redis, and then
+# every /chat fails with:
+#   AttributeError: 'super' object has no attribute 'dumps'
+# Resolve the pair rather than pinning from memory:
+#   uv pip install --dry-run "langgraph==1.*" "langgraph-checkpoint-redis"
+langgraph-checkpoint-redis>=0.5,<1
+
+# mcp is pinned EXPLICITLY, not left to the adapter's transitive resolution.
+# Without this line pip picked an older mcp than langchain-mcp-adapters needs, and
+# the mismatch surfaced at container start as:
+#   ModuleNotFoundError: No module named 'mcp.shared.session'
+# Pinning it here makes an incompatible pair fail at build time instead — loud and
+# in CI, rather than as a crashloop that reads like an application bug.
+langchain-mcp-adapters>=0.1.9,<1
+mcp>=1.9,<2
+
+# Tracing. Optional at runtime — Nova starts untraced if keys are absent.
+# v4 series: `langfuse>=3,<4` was a guess and wrong — the current SDK is 4.14.x and
+# the Langfuse Cloud project reports server v4.11.0. Verified rather than recalled:
+#   uv pip install langfuse && python -c "import langfuse; print(langfuse.__version__)"
+langfuse>=4,<5

@@ -1,4 +1,4 @@
-# Nova — MLOps Agent Platform
+# Nova — MLOps Banking Agent Platform
 
 **An MLOps/LLMOps platform: CI/CD for an AI agent, where automated evaluation is the
 deployment gate.**

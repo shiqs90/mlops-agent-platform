@@ -69,40 +69,83 @@ E1 depends on.*
         --zone=us-west1-b --project=mlops-lifecycle-p7-gke --quiet
       ```
 
-### 1a — Secrets (Secret Manager → ESO → cluster)
+### 1a — Secrets (Secret Manager → ESO → cluster) — DONE 2026-08-16
 
-- [x] `terraform-gcp/secrets.tf` written and **applied** (2026-08-16) — Secret Manager secret
-      `nova-postgres-password`, ESO service account, scoped `secretAccessor`, Workload Identity binding
-- [ ] Helm install External Secrets Operator into `external-secrets` ns, with the
-      `iam.gke.io/gcp-service-account` annotation from `terraform output external_secrets_sa_email`
-- [ ] **Check CRD API version** — `kubectl api-resources | grep external-secrets`. If `v1` rather
-      than `v1beta1`, edit both apiVersion lines in `k8s/external-secrets.yaml` first
-- [ ] Apply `k8s/external-secrets.yaml` (SecretStore + ExternalSecret)
-- [ ] verify: `kubectl get externalsecret -n nova` reaches `SecretSynced`
+- [x] `terraform-gcp/secrets.tf` applied — Secret Manager secret `nova-postgres-password`,
+      ESO service account, scoped `secretAccessor`, Workload Identity binding
+- [x] External Secrets Operator installed via Helm with the `iam.gke.io/gcp-service-account`
+      annotation
+- [x] CRDs registered as **`external-secrets.io/v1`**, not `v1beta1` — both apiVersion lines in
+      `k8s/external-secrets.yaml` were edited to match. Re-check after any chart upgrade; the
+      CRDs decide, not the docs.
+- [x] `k8s/external-secrets.yaml` applied — SecretStore + ExternalSecret reached `SecretSynced`
 
-### 1b — Postgres
+### 1b — Postgres — DONE 2026-08-16
 
-- [x] `k8s/postgres.yaml` written — StatefulSet, headless Service, 10Gi PVC
-- [x] `db/schema.sql` written — 6 tables incl. `ingest_runs` lineage
-- [ ] Apply `k8s/postgres.yaml` (pod waits in `CreateContainerConfigError` until 1a completes —
-      expected, not a failure)
-- [ ] Load schema: `kubectl exec -i -n nova postgres-0 -- psql -U nova -d nova < db/schema.sql`
-- [ ] verify: `\dt` lists accounts, cards, customers, ingest_runs, loans, transactions
+- [x] `k8s/postgres.yaml` — StatefulSet, headless Service, 10Gi PVC, `postgres-0` Running
+- [x] `db/schema.sql` loaded — 6 tables incl. `ingest_runs` lineage
 
-### 1c — Seed data
+### 1c — Seed data — DONE 2026-08-16
 
-- [ ] Seed script — ~2k customers, 3k accounts, 200k transactions, cards, loans
-- [ ] Run as a K8s Job; writes an `ingest_runs` row with the source commit
-- [ ] verify: row counts match; every data row has a non-null `ingest_run_id`
+- [x] `db/seed.py` + `k8s/seed-job.yaml` (ConfigMap-mounted script, no image build)
+- [x] Loaded: `ingest_run_id=ING-20260801-42` — 2,000 customers / 3,000 accounts /
+      ~200,397 transactions / 2,488 cards / 589 loans
+- [x] verify: 0 balance mismatches (balance == transaction net)
+- [x] **Bug found and fixed:** 397 accounts (13%) held balances their type doesn't permit —
+      savings and fixed deposits overdrawn against a 0 limit, worst −163k. Cause: transactions
+      assigned to random accounts regardless of account type. Fixed by emitting an
+      `opening_balance` credit for any account below its floor, **not** by clamping the balance
+      — clamping would break `balance == sum(transactions)` and let Nova contradict itself
+      across two questions in one conversation. Current accounts legitimately overdrawn within
+      their limit were left alone; they're the interesting cases for overdraft questions.
 
-### 1d — MCP connectors
+### 1d — MCP connectors — DONE 2026-08-16
 
-- [ ] `mcp-accounts` — balance, account details, overdraft limits
-- [ ] `mcp-transactions` — history, search, categorisation
-- [ ] `mcp-products` — cards, loans, rates
-- [ ] verify: each server responds to tool-list; a SQL query and its tool call agree
+- [x] One image, three entrypoints: `mcp-servers/{common,accounts,transactions,products}.py`
+- [x] Built via **Cloud Build** (`gcloud builds submit`) — local Docker daemon wasn't running,
+      and Cloud Build also builds natively on amd64, sidestepping the arm64 `exec format error`
+      that bites when building on Apple silicon for GKE nodes
+- [x] All three Deployments Running, serving StreamableHTTP on :8080
+- [ ] verify: `tools/list` returns the expected tools per server
+- [ ] verify: a SQL query and the equivalent tool call agree
 
-## Phase 2 — Nova agent (~8h)
+## Phase 2 — Nova agent (~8h) — mostly done 2026-08-17
+
+- [x] `nova/app.py` — FastAPI + LangChain `create_agent`, four runaway limits
+      (recursion, max_tokens, request timeout, client timeout), agent/judge models as
+      separate env vars so the judge can move to Sonnet without a code change
+- [x] `nova/Dockerfile`, `nova/requirements.txt` — **`mcp` pinned explicitly**, not left
+      to transitive resolution (see war story #10)
+- [x] `k8s/redis.yaml` — **`redis/redis-stack-server`**, not `redis:7-alpine`; the
+      checkpointer needs RediSearch (war story #11)
+- [x] `k8s/nova.yaml` — Deployment + Service, plain Deployment on purpose (becomes an
+      Argo Rollout in E1, not before)
+- [x] Built via Cloud Build, deployed, **9 tools loaded** across all three MCP servers
+- [x] Redis checkpointer connects — `session memory: redis at ...`, no fallback
+- [x] **verify: single-tool question returns a correct balance** — `185,254.95 AED`,
+      matches the DB exactly, correct tool and args
+- [x] **verify: follow-up resolves account + date from memory** — "that account" → `ACC-00004`,
+      "July 2026" → `2026-07-01`/`2026-07-31`, `category: salary`
+- [x] **Reporting bug fixed** (war story #17) — `result["messages"]` is the whole thread, so
+      `tool_calls` and `usage` were accumulating across turns. Would have failed every
+      multi-turn Phase 4 eval case against a correctly-behaving agent. Now sliced per turn;
+      `turn_messages` / `history_messages` added so the cost gate can tell an inefficient
+      agent from a long conversation.
+- [x] **Stale-answer bug fixed** (war story #18) — the agent sometimes answered repeat
+      questions from a previous turn's tool result instead of re-querying, non-deterministically.
+      System prompt now requires a tool call for any balance/transaction/card/loan question.
+      Verified: Haiku calls the tool 100% of the time after the fix, which also answers
+      "is Haiku not smart enough?" — it was an unwritten rule, not a capability limit.
+- [x] Lockfiles — `nova/requirements.lock`, `mcp-servers/requirements.lock` via
+      `uv pip compile --python-platform linux`; both Dockerfiles install from the lock.
+      Three outages in this build came from dependency resolution, not code.
+
+**Live tags:** `nova:20260817-1245-nocache`, `mcp-servers:20260817-1148-lock`
+**Rollback:** `nova:20260817-1115`, `mcp-servers:20260816-1924`
+- [x] `docs/DEBUGGING.md` written — command playbook by symptom
+- [x] War stories #7–14 recorded in `PROJECT7-SUMMARY.md`
+
+### Deferred from Phase 2
 
 - [ ] FastAPI + LangChain `create_agent`
 - [ ] MCP adapter binding the three servers as tools

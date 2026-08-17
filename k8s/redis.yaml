@@ -1,0 +1,66 @@
+# Redis backs LangGraph's checkpointer — Nova's session memory.
+#
+# StatefulSet with a PVC rather than a Deployment with emptyDir: a restart that loses
+# every in-flight conversation is the kind of thing that looks fine in a demo and
+# terrible in production. Persistence is cheap here; the lesson isn't.
+#
+# Single replica, no HA. A real deployment would run Sentinel or a managed Redis —
+# named as a gap rather than pretended away.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: nova
+spec:
+  clusterIP: None
+  selector: {app: redis}
+  ports: [{port: 6379, targetPort: 6379}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: nova
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels: {app: redis}
+  template:
+    metadata:
+      labels: {app: redis}
+    spec:
+      containers:
+        - name: redis
+          # redis-stack-server, NOT redis:7-alpine.
+          #
+          # langgraph-checkpoint-redis indexes checkpoints with RediSearch (FT.CREATE,
+          # FT.INFO). Plain Redis doesn't ship those modules, so it answers
+          # "unknown command 'FT.INFO'" — and because Nova falls back to in-memory
+          # rather than crashing, the symptom is a WARNING in the log and session
+          # memory that silently dies with the pod. Exactly the kind of failure that
+          # looks fine in a demo.
+          image: redis/redis-stack-server:latest
+          # appendonly yes = write every change to a log, so a restart replays rather
+          # than resuming from the last periodic snapshot. Conversations survive.
+          # redis-stack-server takes config through REDIS_ARGS, not argv.
+          env:
+            - {name: REDIS_ARGS, value: "--appendonly yes"}
+          ports: [{containerPort: 6379}]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          resources:
+            # Heavier than plain Redis — the modules cost memory even when idle.
+            requests: {cpu: 100m, memory: 384Mi}
+            limits: {memory: 1Gi}
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: {storage: 2Gi}
