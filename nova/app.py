@@ -90,6 +90,51 @@ log = logging.getLogger("nova")
 
 state: dict = {}
 
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+#
+# Langfuse and Prometheus answer different questions and neither replaces the other:
+#   Langfuse   "what happened in THIS request"      — traces, for debugging
+#   Prometheus "what's happening across ALL of them" — metrics, for alerting
+#
+# Only an aggregate can gate a rollout, which is why E1's Argo Rollouts analysis
+# reads Prometheus and not Langfuse.
+#
+# Cardinality discipline: `tool` is bounded at 9 and `status` at 3. trace_id and
+# session_id are deliberately NOT labels — unbounded label values are the standard
+# way to take down a Prometheus, and that is exactly what traces are for.
+# ---------------------------------------------------------------------------
+
+from prometheus_client import Counter, Gauge, Histogram  # noqa: E402
+
+REQUESTS = Counter("nova_requests_total", "Chat requests", ["status"])
+LATENCY = Histogram(
+    "nova_request_duration_seconds", "End-to-end chat latency",
+    # Buckets chosen from observed behaviour: a single-tool turn lands ~1.9s, a
+    # two-tool turn ~2.6s. Default buckets top out too low to show the tail.
+    buckets=(0.5, 1, 2, 3, 5, 8, 15, 30, 60),
+)
+TOOL_CALLS = Counter("nova_tool_calls_total", "Tool invocations", ["tool"])
+TOKENS = Counter("nova_tokens_total", "Model tokens", ["direction"])
+COST = Counter("nova_cost_usd_total", "Estimated model spend in USD")
+TURN_TOOLS = Histogram(
+    "nova_tools_per_turn", "Tool calls in one turn",
+    buckets=(0, 1, 2, 3, 5, 8),
+)
+
+# The degraded-state gauges. War story #5: the Redis checkpointer fell back to
+# in-process memory and announced it in a single WARNING — a healthy pod that
+# silently loses every conversation on restart. A log line is not a signal; this is.
+MEMORY_PERSISTENT = Gauge("nova_memory_persistent", "1 if session memory is Redis-backed, 0 if in-process")
+TRACING_ENABLED = Gauge("nova_tracing_enabled", "1 if Langfuse tracing is active")
+
+# USD per million tokens, mirroring eval/run_eval.py.
+RATES = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-5":  (3.00, 15.00),
+    "claude-opus-5":    (5.00, 25.00),
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -163,6 +208,10 @@ async def lifespan(app: FastAPI):
         checkpointer=checkpointer,
     )
     state["tool_names"] = [t.name for t in tools]
+
+    MEMORY_PERSISTENT.set(1 if state.get("memory_backend") == "redis" else 0)
+    TRACING_ENABLED.set(1 if state.get("tracing") == "langfuse" else 0)
+
     yield
 
     if "checkpointer_cm" in state:
@@ -170,6 +219,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Nova", lifespan=lifespan)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint.
+
+    Hand-mounted rather than using prometheus-fastapi-instrumentator: the metrics
+    that matter here are domain ones (tool calls, tokens, cost, memory backend), and
+    the default HTTP middleware would add per-path request counters that duplicate
+    what the ingress already reports.
+    """
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    from fastapi.responses import Response
+
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 class ChatRequest(BaseModel):
@@ -242,6 +306,8 @@ async def chat(req: ChatRequest):
             timeout=REQUEST_TIMEOUT,
         )
     except asyncio.TimeoutError:
+        REQUESTS.labels(status="timeout").inc()
+        LATENCY.observe(time.monotonic() - started)
         log.warning("trace_id=%s timeout after %.1fs", trace_id, REQUEST_TIMEOUT)
         return {"trace_id": trace_id, "error": "timeout", "session_id": req.session_id}
     except Exception as exc:
@@ -249,6 +315,10 @@ async def chat(req: ChatRequest):
         # than a generic 500 — "the agent looped" and "the model errored" need
         # different fixes, and Phase 4's metrics have to tell them apart.
         kind = "recursion_limit" if "recursion" in str(exc).lower() else "error"
+        # recursion_limit gets its own label: "the agent looped" and "the model
+        # errored" need different fixes, and an alert should distinguish them.
+        REQUESTS.labels(status=kind).inc()
+        LATENCY.observe(time.monotonic() - started)
         log.exception("trace_id=%s %s", trace_id, kind)
         # Include the exception TYPE, not just str(exc). A bare NotImplementedError
         # stringifies to "" — which is how this handler once returned
@@ -289,7 +359,19 @@ async def chat(req: ChatRequest):
     if isinstance(answer, list):   # content blocks rather than a plain string
         answer = " ".join(b.get("text", "") for b in answer if isinstance(b, dict))
 
-    latency_ms = round((time.monotonic() - started) * 1000)
+    elapsed = time.monotonic() - started
+    latency_ms = round(elapsed * 1000)
+
+    REQUESTS.labels(status="ok").inc()
+    LATENCY.observe(elapsed)
+    TURN_TOOLS.observe(len(tool_calls))
+    for c in tool_calls:
+        TOOL_CALLS.labels(tool=c["tool"]).inc()
+    TOKENS.labels(direction="input").inc(tokens_in)
+    TOKENS.labels(direction="output").inc(tokens_out)
+    rate_in, rate_out = RATES.get(AGENT_MODEL, (0.0, 0.0))
+    COST.inc((tokens_in / 1e6) * rate_in + (tokens_out / 1e6) * rate_out)
+
     log.info("trace_id=%s turn=%d tools=%s tokens=%d/%d %dms",
              trace_id, len(turn), [t["tool"] for t in tool_calls],
              tokens_in, tokens_out, latency_ms)

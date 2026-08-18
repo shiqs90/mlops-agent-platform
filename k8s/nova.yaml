@@ -13,9 +13,14 @@ kind: Service
 metadata:
   name: nova
   namespace: nova
+  labels:
+    app: nova              # the ServiceMonitor selects on THIS, not on pod labels
 spec:
   selector: {app: nova}
-  ports: [{port: 8000, targetPort: 8000}]
+  ports:
+    # Named port. A ServiceMonitor endpoint references a port by name; an unnamed
+    # port cannot be targeted and the scrape silently never happens.
+    - {name: http, port: 8000, targetPort: 8000}
 ---
 apiVersion: apps/v1
 kind: Deployment

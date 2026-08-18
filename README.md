@@ -74,49 +74,19 @@ the golden set never covered, a connector quietly changing its response format.
 | **Progressive delivery** | Argo Rollouts blue-green with pre- and post-promotion analysis |
 | **CI/CD** | GitHub Actions: contract checks → manifest commit → smoke test |
 | **Observability** | Langfuse traces + Prometheus metrics, joined by one `trace_id` |
-| **Model registry / training** | MLflow + in-cluster fine-tuning Job (Phase 6 router distillation) |
+| **Model registry / training** | MLflow + in-cluster fine-tuning Job for router distillation |
 | **Security** | PII masking before the prompt leaves the boundary; HITL approval on writes; least-privilege node SA; Workload Identity |
 | **IaC** | Terraform on GKE via HCP Terraform |
 
 ## Architecture
 
-```
-                         ┌──────────────────────────────┐
-   customer question ───▶│  Nova API (FastAPI + LangChain)
-                         │  - tool loop                 │
-                         │  - PII masking middleware    │
-                         │  - HITL approval middleware  │
-                         │  - checkpointer memory ──────┼──▶ Redis (StatefulSet)
-                         │  - trace_id issued here      │
-                         └───────┬──────────────┬───────┘
-                                 │              │
-                        MCP adapter       Claude API (haiku-4-5)
-                                 │
-              ┌──────────────────┼──────────────────┐
-              ▼                  ▼                  ▼
-      mcp-accounts      mcp-transactions      mcp-products
-      balance,          history, search,      cards, loans,
-      overdraft         categorisation        rates
-              └──────────────────┼──────────────────┘
-                                 ▼
-                         Postgres (StatefulSet)
-                         - seeded banking dataset
-                         - eval_runs / eval_results
+![Nova on GKE](docs/diagrams/nova-gke.png)
 
-   every hop ──▶ Langfuse (traces)   +   Prometheus (metrics)
-
-   ┌─────────────────── Evaluation Hub ───────────────────┐
-   │  EvaluationRun CRD                                    │
-   │  controller (kopf)  ── watches CRs, spawns Jobs       │
-   │  runner Job         ── replays sets, scores 4 metrics │
-   │  CronJob            ── scheduled drift runs           │
-   └───────────────────────────┬───────────────────────────┘
-                               │ scores scraped by Prometheus
-                               ▼
-   git ──▶ Argo CD ──▶ Argo Rollouts (blue-green)
-                       prePromotionAnalysis  ── quality + cost (preview Service)
-                       postPromotionAnalysis ── live metrics (active Service)
-```
+Nova on GKE: the agent, three MCP connectors over one image, Postgres and Redis StatefulSets,
+and secrets reaching the cluster through Workload Identity with no static credential anywhere on
+the path. Generated from `terraform-gcp/` and `k8s/` by
+[`docs/diagrams/nova-gke.py`](docs/diagrams/nova-gke.py); the request path, every edge, and the
+tradeoffs behind each choice are in [docs/architecture-gke.md](docs/architecture-gke.md).
 
 ## The five gates
 
@@ -165,49 +135,6 @@ you can score a real customer question with no expected answer to compare agains
 Neither is hand-authored as question/answer pairs. Where a literal answer is needed it is
 **computed by SQL against the same seed data** — machine-generated and provably correct.
 
----
-
-## Time to complete
-
-Estimated against this project's working model: **I supply the commands, you execute them and
-paste the output back.** That round trip adds real elapsed time on infrastructure-heavy phases
-and very little on code-heavy ones, where files are written directly.
-
-| | Phase | Work | Elapsed (with command round-trips) |
-|---|---|---|---|
-| **Core** | 0 — Infrastructure | 2h | ~3h |
-| | 1 — Data + MCP connectors | 8h | ~10h |
-| | 2 — Nova agent | 8h | ~9h |
-| | 2.5 — PII masking + human approval | 2h | ~2h |
-| | 3 — Observability | 5h | ~7h |
-| | 4 — Evaluation Hub | 10h | ~12h |
-| | 4.5 — Drift Tier 1, scheduled replay | 2h | ~3h |
-| | **Core subtotal** | **~37h** | **~46h** |
-| **Enhancements** | E1 — GitOps delivery | 9h | ~13h |
-| | E2 — Drift Tier 2, live-traffic scoring | 4h | ~5h |
-| | E3 — Cheap router (model distillation) | 8h | ~10h |
-| | E4 — Hardening | 5h | ~7h |
-| | **Enhancements subtotal** | **~26h** | **~35h** |
-| | **Total** | **~63h** | **~81h** |
-
-**Calendar:** at 2–3 hour sessions, roughly **28–40 sessions** — **9–14 weeks** at three
-sessions a week, **6–8 weeks** near-daily. The **core build alone is ~46h elapsed**: 16–23
-sessions, or 5–8 weeks at three a week.
-
-**What "core" gets you:** a working banking agent over real MCP connectors, with session memory,
-PII masking, human approval on consequential writes, full request tracing, and an automated
-evaluation service that scores it on demand and on a schedule with drift alerting. That is a
-demonstrable project on its own. **E1 is what turns the evaluation into an actual deployment
-gate** — until then the Hub produces a verdict but nothing consumes it.
-
-Treat the elapsed column as the floor, not the estimate. This repo's own war-story log shows
-30-minute to 2-hour surprises are routine — quota ceilings, ADC/CLI identity mismatches,
-workspace execution modes, browser and CLI signed into different accounts.
-
-**Earlier stopping points, if the full build is too long:** Phase 5 is a complete, defensible
-project on its own — agent, connectors, memory, tracing, evaluation, and GitOps-gated delivery.
-Phases 5.5 and 6 (drift Tier 2 and distillation) are what take it from good to distinctive.
-
 ## Cost
 
 No GPU at any point.
@@ -226,12 +153,3 @@ Hard ceiling for the project: **$10.**
 gcloud container clusters resize mlops-lifecycle --node-pool=primary --num-nodes=0 \
   --zone=us-west1-b --project=mlops-lifecycle-p7-gke --quiet
 ```
-
-## Not built
-
-RAG (covered by `sovereign-rag-platform`), A/B testing, node autoscaling.
-
----
-
-Design rationale, tradeoffs, and the full phase breakdown: [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
-Progress: [status.md](status.md).

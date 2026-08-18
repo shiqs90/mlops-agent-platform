@@ -1,0 +1,112 @@
+# Prometheus scrape config and alerts for Nova.
+#
+# Install kube-prometheus-stack first — these are CRDs it provides:
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     --set grafana.enabled=true \
+#     --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+#     --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false
+#
+# Those last two flags matter. By default the operator only picks up ServiceMonitors
+# and PrometheusRules carrying the chart's own release label — so a monitor in
+# another namespace is silently ignored and you get an empty graph with no error.
+# It is the single most common "why is Prometheus not scraping my app" cause.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nova
+  namespace: nova
+  labels:
+    app: nova
+spec:
+  selector:
+    matchLabels:
+      app: nova          # must match the Service's labels, not the pod's
+  endpoints:
+    - port: http         # named port on the Service — a number will not work here
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nova-alerts
+  namespace: nova
+  labels:
+    app: nova
+spec:
+  groups:
+    - name: nova
+      rules:
+
+        # War story #5: the Redis checkpointer fell back to in-process memory and
+        # said so in one WARNING. Pod healthy, requests fine, every conversation
+        # lost on restart. A log line is not a signal — this is.
+        - alert: NovaSessionMemoryDegraded
+          expr: nova_memory_persistent == 0
+          for: 2m
+          labels: {severity: warning}
+          annotations:
+            summary: "Nova session memory is in-process, not Redis"
+            description: >-
+              The checkpointer fell back to InMemorySaver. Conversations are lost on
+              restart and are not shared across replicas. Check Redis reachability and
+              that the image is redis/redis-stack-server (RediSearch is required).
+
+        - alert: NovaTracingDown
+          expr: nova_tracing_enabled == 0
+          for: 5m
+          labels: {severity: info}
+          annotations:
+            summary: "Nova is running untraced"
+            description: >-
+              Langfuse keys missing or the handler failed to initialise. Tracing is
+              deliberately optional — observability must not take down what it observes —
+              so this is informational, not a page.
+
+        - alert: NovaErrorRateHigh
+          expr: |
+            sum(rate(nova_requests_total{status!="ok"}[5m]))
+              / clamp_min(sum(rate(nova_requests_total[5m])), 0.001) > 0.1
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "Nova error rate above 10%"
+
+        # Separate from the error rate on purpose. A looping agent returns errors AND
+        # burns tokens; the two need different responses, so they need different alerts.
+        - alert: NovaAgentLooping
+          expr: rate(nova_requests_total{status="recursion_limit"}[10m]) > 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "Nova is hitting the recursion limit"
+            description: >-
+              The agent is exhausting RECURSION_LIMIT graph steps. Usually a prompt or
+              tool-description change that stopped it converging. Check recent deploys.
+
+        - alert: NovaLatencyHigh
+          expr: |
+            histogram_quantile(0.95, sum(rate(nova_request_duration_seconds_bucket[5m])) by (le)) > 10
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "Nova p95 latency above 10s"
+
+        # The cost alert. Quality and cost fail INDEPENDENTLY — a change can keep
+        # answering correctly while doubling tokens through extra tool-loop
+        # iterations, which no quality metric and no health check would catch.
+        - alert: NovaToolCallsPerTurnHigh
+          expr: |
+            histogram_quantile(0.95, sum(rate(nova_tools_per_turn_bucket[30m])) by (le)) > 4
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Nova is averaging more than 4 tool calls per turn"
+            description: >-
+              Cost regression without a quality regression. Each extra tool call adds a
+              model round trip whose input includes the growing tool output.

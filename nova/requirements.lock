@@ -157,6 +157,8 @@ packaging==26.3
     #   langchain-core
     #   langfuse
     #   langsmith
+prometheus-client==0.26.0
+    # via -r nova/requirements.txt
 protobuf==7.35.1
     # via
     #   googleapis-common-protos

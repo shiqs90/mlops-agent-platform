@@ -31,3 +31,7 @@ mcp>=1.9,<2
 # the Langfuse Cloud project reports server v4.11.0. Verified rather than recalled:
 #   uv pip install langfuse && python -c "import langfuse; print(langfuse.__version__)"
 langfuse>=4,<5
+
+# Metrics. Domain counters (tool calls, tokens, cost, memory backend) exposed at
+# /metrics for kube-prometheus-stack to scrape.
+prometheus-client>=0.21,<1
