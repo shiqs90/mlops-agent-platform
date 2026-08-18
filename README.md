@@ -149,8 +149,6 @@ No GPU at any point.
 | Claude API per ~18-question eval run | ~$0.17 (`haiku-4-5` agent + `sonnet-5` judge) |
 | Drift monitoring | ~$5/month nightly, ~$1.20/month weekly |
 
-Hard ceiling for the project: **$10.**
-
 ```bash
 # Between sessions
 gcloud container clusters resize mlops-lifecycle --node-pool=primary --num-nodes=0 \
