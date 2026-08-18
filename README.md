@@ -82,11 +82,14 @@ the golden set never covered, a connector quietly changing its response format.
 
 ![Nova on GKE](docs/diagrams/nova-gke.png)
 
-Nova on GKE: the agent, three MCP connectors over one image, Postgres and Redis StatefulSets,
-and secrets reaching the cluster through Workload Identity with no static credential anywhere on
-the path. Generated from `terraform-gcp/` and `k8s/` by
-[`docs/diagrams/nova-gke.py`](docs/diagrams/nova-gke.py); the request path, every edge, and the
-tradeoffs behind each choice are in [docs/architecture-gke.md](docs/architecture-gke.md).
+One customer question, numbered 1–9: in through the GKE control plane, context from Redis, the
+model decides a tool, the MCP connectors query Postgres, the answer goes back, the trace goes out.
+Prometheus scrapes `/metrics`; secrets reach the pods through Workload Identity with no static
+credential on the path.
+
+Generated from `terraform-gcp/` and `k8s/` by
+[`docs/diagrams/nova-gke.py`](docs/diagrams/nova-gke.py). Every edge, the trust boundaries, and
+the tradeoffs behind each choice: [docs/architecture-gke.md](docs/architecture-gke.md).
 
 ## The five gates
 

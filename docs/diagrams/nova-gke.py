@@ -1,20 +1,24 @@
 """Nova on GKE — how a customer question flows through the system.
 
-A RUNTIME diagram. Build- and provision-time components are deliberately absent:
-Terraform, Cloud Build, Artifact Registry, the one-shot seed Job, the eval runner.
-Those create the system; they take no part in an interaction.
+A RUNTIME diagram. Provision- and build-time components are absent on purpose: Terraform,
+Cloud Build, Artifact Registry, the seed Job, the eval runner. They create the system; they
+take no part in an interaction.
 
-Numbered edges follow one question end to end. Dotted edges are standing background —
-credentials the pods already hold, refreshed hourly, not fetched per request.
+Numbered edges follow one question end to end. Dotted edges are standing background.
 
-Trust zones, not public/private subnet lanes: GCP subnets carry no public/private flag,
-privacy is `enable_private_nodes = true` (no external IP), Cloud NAT is a regional service
-that lives in no subnet, and subnets are regional so there are no AZ columns.
-See docs/architecture-gke.md section 2.
+STRUCTURE is containment: GCP project -> VPC -> GKE data plane -> namespace. The control
+plane sits outside the VPC because it genuinely runs in a Google-owned VPC peered to yours.
 
-LABELS ARE DELIBERATELY SHORT. graphviz gives every node a fixed-size icon and draws the
-label beneath it at full width, so long multi-line labels overrun their neighbours. Detail
-belongs in the doc, not on the canvas.
+COLOUR encodes ownership, not nesting depth:
+    grey = outside your control   blue = Google-managed
+    green = your GKE cluster      white = your workloads
+
+ICON = what the thing is (Python service, FastAPI app, Postgres, Redis).
+LABEL = how it is deployed (Deployment, StatefulSet).
+
+LABELS ARE TWO SHORT LINES, MAX. graphviz draws a fixed-size icon with the label beneath at
+full text width, so long labels overrun their neighbours and the page turns to soup. Every
+number, CIDR and rationale belongs in docs/architecture-gke.md, not on the canvas.
 
 Render:  python3 docs/diagrams/nova-gke.py   ->  docs/diagrams/nova-gke.png
 """
@@ -23,14 +27,15 @@ from diagrams import Cluster, Diagram, Edge
 from diagrams.gcp.compute import GKE
 from diagrams.gcp.network import NAT
 from diagrams.gcp.security import Iam, KMS
-from diagrams.k8s.compute import Deployment, StatefulSet
-from diagrams.k8s.ecosystem import Helm
 from diagrams.k8s.podconfig import Secret
 from diagrams.onprem.client import Client
 from diagrams.onprem.compute import Server
+from diagrams.onprem.database import PostgreSQL
+from diagrams.onprem.inmemory import Redis
+from diagrams.onprem.monitoring import Grafana, Prometheus
 from diagrams.programming.framework import Fastapi
+from diagrams.programming.language import Python
 
-# nodesep/ranksep are the overlap fix: wide labels need room on both axes.
 graph_attr = {
     "fontsize": "16",
     "bgcolor": "white",
@@ -42,8 +47,15 @@ graph_attr = {
 node_attr = {"fontsize": "13"}
 edge_attr = {"fontsize": "12"}
 
+OUTSIDE = {"bgcolor": "#F3F3F1", "pencolor": "#9AA0A6", "fontsize": "15"}
+GOOGLE = {"bgcolor": "#E8F0FE", "pencolor": "#1A73E8", "fontsize": "16"}
+GOOGLE_MANAGED = {"bgcolor": "#D2E3FC", "pencolor": "#174EA6", "style": "rounded,dashed", "fontsize": "14"}
+NETWORK = {"bgcolor": "#DCE9FB", "pencolor": "#1967D2", "fontsize": "14"}
+CLUSTER = {"bgcolor": "#E6F4EA", "pencolor": "#137333", "penwidth": "2", "fontsize": "16"}
+NAMESPACE = {"bgcolor": "#FFFFFF", "pencolor": "#5F6368", "style": "rounded,dashed", "fontsize": "14"}
+
 with Diagram(
-    "Nova on GKE — one customer question, end to end",
+    "Nova on GKE",
     filename="docs/diagrams/nova-gke",
     show=False,
     direction="TB",
@@ -51,45 +63,43 @@ with Diagram(
     node_attr=node_attr,
     edge_attr=edge_attr,
 ):
-    with Cluster("INTERNET — untrusted"):
+    with Cluster("INTERNET", graph_attr=OUTSIDE):
         client = Client("customer")
         anthropic = Server("Anthropic API\nclaude-haiku-4-5")
-        langfuse = Server("Langfuse Cloud\ntraces")
+        langfuse = Server("Langfuse\ntraces")
 
-    # The zone note lives in the cluster label, not in a node — a node here overlapped.
-    with Cluster("PUBLIC EDGE — no Ingress, no LoadBalancer, no external IP on any node"):
-        control_plane = GKE("GKE control plane\npublic endpoint · 1 /32")
+    with Cluster("GCP project · us-west1", graph_attr=GOOGLE):
+        with Cluster("GKE CONTROL PLANE — Google-owned, peered", graph_attr=GOOGLE_MANAGED):
+            control_plane = GKE("mlops-lifecycle\npublic · 1 /32")
+
         nat = NAT("Cloud NAT\negress only")
+        sm = KMS("Secret Manager")
+        gsa = Iam("GSA\nper-secret access")
 
-    with Cluster(
-        "YOUR VPC — us-west1, REGIONAL subnet 10.10.0.0/20 · pods 10.20.0.0/16\n"
-        "private because enable_private_nodes = true, not because of a subnet flag"
-    ):
-        with Cluster("node pool primary — 2 x e2-standard-4 · NO GPU"):
-            with Cluster("ns external-secrets"):
-                eso = Helm("External Secrets\nOperator")
+        with Cluster("VPC — no Ingress, no external IP on any node", graph_attr=NETWORK):
+            with Cluster("GKE DATA PLANE — 2 x e2-standard-4 · no GPU", graph_attr=CLUSTER):
+                with Cluster("namespace nova", graph_attr=NAMESPACE):
+                    nova = Fastapi("nova · Deployment\nFastAPI agent")
 
-            with Cluster("namespace nova"):
-                nova = Fastapi("nova · svc:8000\nFastAPI + LangChain")
+                    with Cluster("MCP connectors — 9 tools", graph_attr=NAMESPACE):
+                        mcp = [
+                            Python("mcp-accounts\n4 tools"),
+                            Python("mcp-transactions\n3 tools"),
+                            Python("mcp-products\n2 tools"),
+                        ]
 
-                with Cluster("MCP connectors — 9 tools"):
-                    mcp = [
-                        Deployment("mcp-accounts\n4 tools"),
-                        Deployment("mcp-transactions\n3 tools"),
-                        Deployment("mcp-products\n2 tools"),
-                    ]
+                    postgres = PostgreSQL("postgres-0 · StatefulSet\nbanking data")
+                    redis = Redis("redis-0 · StatefulSet\npersistent memory")
 
-                postgres = StatefulSet("postgres-0\nsvc:5432 · PVC 10Gi")
-                redis = StatefulSet("redis-0 redis-stack\nsvc:6379 · PVC 2Gi")
-                secrets = Secret("K8s Secrets\nx3")
+                with Cluster("ns monitoring", graph_attr=NAMESPACE):
+                    prometheus = Prometheus("Prometheus\n6 alerts")
+                    grafana = Grafana("Grafana")
 
-    with Cluster("GOOGLE-MANAGED — via Private Google Access, never the NAT"):
-        sm = KMS("Secret Manager\n4 secrets")
-        gsa = Iam("GSA external-secrets\nper-secret access")
+                eso = Secret("external-secrets\noperator")
 
     # ---- the interaction, in order -----------------------------------------
     client >> Edge(label="1 · POST /chat") >> control_plane
-    control_plane >> Edge(label="2 · tunnel to :8000") >> nova
+    control_plane >> Edge(label="2 · port-forward :8000") >> nova
     nova >> Edge(label="3 · load ctx\n8 · save ctx") >> redis
     nova >> Edge(label="4 · prompt + tools\n7 · tool result") >> nat
     nat >> Edge(label="HTTPS :443") >> anthropic
@@ -98,9 +108,11 @@ with Diagram(
     nova >> Edge(label="9 · trace", style="dashed") >> nat
     nat >> Edge(style="dashed") >> langfuse
 
+    # ---- observability: Prometheus pulls, Nova pushes nothing ---------------
+    prometheus >> Edge(label="scrape /metrics · 30s") >> nova
+    grafana >> Edge(label="PromQL") >> prometheus
+
     # ---- standing background, not part of the request ----------------------
-    eso >> Edge(label="WI token", style="dotted") >> gsa
-    gsa >> Edge(label="read", style="dotted") >> sm
-    eso >> Edge(label="sync 1h", style="dotted") >> secrets
-    secrets >> Edge(label="at pod start", style="dotted") >> nova
-    secrets >> Edge(style="dotted") >> postgres
+    eso >> Edge(label="Workload Identity", style="dotted") >> gsa
+    gsa >> Edge(style="dotted") >> sm
+    eso >> Edge(label="syncs Secrets · 1h", style="dotted") >> nova
