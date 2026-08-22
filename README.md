@@ -92,7 +92,7 @@ Generated from `terraform-gcp/` and `k8s/` by
 the tradeoffs behind each choice: [docs/architecture-gke.md](docs/architecture-gke.md).
 
 ## Tracing
-
+![Langfuse tracing](docs/diagrams/langfuse_tracing.png)
 
 ## The five gates
 
