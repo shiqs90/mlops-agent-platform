@@ -37,7 +37,7 @@ spec:
     spec:
       containers:
         - name: nova
-          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova:IMAGE_TAG
+          image: "{{ .Values.images.nova.repository }}:{{ .Values.images.nova.tag }}"
           ports: [{containerPort: 8000}]
           env:
             # Models are separate variables even though both start as Haiku. The judge

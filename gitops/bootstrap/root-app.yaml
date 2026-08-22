@@ -1,0 +1,45 @@
+# App-of-apps: one Application whose only job is to sync the directory of other
+# Applications.
+#
+# WHY THE INDIRECTION, when there is currently exactly one child app. Two reasons,
+# both about what happens next rather than what exists now:
+#
+#   1. Bootstrap is one command, forever. `kubectl apply -f root-app.yaml` is the
+#      last kubectl any of this needs. Every future app — the Evaluation Hub
+#      controller in Phase 4, the CronJob in 4.5, Argo Rollouts in E1b — arrives by
+#      committing a file to gitops/apps/ and gets picked up with no cluster access
+#      at all. That is the property that makes "reconstruct the platform from the
+#      repo" true rather than aspirational.
+#
+#   2. Applications become reviewable. A sync policy change is a PR diff, not
+#      someone's shell history.
+#
+# The root app manages Applications, which live in the argocd namespace — that is
+# why destination.namespace is argocd and not nova. The child app is what points at
+# nova.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shiqs90/mlops-agent-platform.git
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # prune here means: delete a file from gitops/apps/ and the Application object
+      # is removed. Because the child app carries no resources-finalizer, that
+      # orphans its workloads rather than deleting them — deliberate, see nova.yaml.
+      prune: true
+      selfHeal: true

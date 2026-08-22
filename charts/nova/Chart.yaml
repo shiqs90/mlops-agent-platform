@@ -1,0 +1,21 @@
+# Nova platform chart — the six manifests that make up the nova namespace.
+#
+# WHY A CHART AND NOT RAW YAML. Under GitOps there is no apply-time step to hook, so
+# the image tag has to be resolved inside the repo. Helm was chosen over Kustomize
+# for one reason: Helm is ALREADY in this stack (ESO, kube-prometheus-stack, and
+# Argo CD itself are all Helm-installed), and Kustomize would have been a fourth way
+# to render YAML for the sake of one substitution.
+#
+# DELIBERATELY THIN. The templates are the original manifests, moved verbatim, with
+# exactly four lines templated — the image references. Replicas, resources, env, and
+# limits are all still literal. Templating things nobody varies makes a manifest
+# harder to read and gives you {{ }} you cannot justify.
+apiVersion: v2
+name: nova
+description: Nova banking agent, its MCP connectors, and their datastores
+type: application
+
+# Chart version tracks the packaging; appVersion tracks what is being packaged.
+# Neither is the image tag — that lives in values.yaml, which is the file CI writes.
+version: 0.1.0
+appVersion: "0.1.0"

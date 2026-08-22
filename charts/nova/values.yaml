@@ -1,0 +1,23 @@
+# THE FILE CI WRITES. E1b's GitHub Actions job promotes an image by setting a tag
+# here and committing:
+#
+#   yq -i '.images.nova.tag = "20260821-1430"' charts/nova/values.yaml
+#
+# That commit IS the deploy record. `git log --follow charts/nova/values.yaml` is a
+# complete, attributed history of every image that has served traffic, which is the
+# answer to "how do you tie a live endpoint back to an exact version".
+#
+# Tags are pinned to what is live right now, so Argo CD's first sync is a no-op
+# against the running cluster instead of an unplanned rollout. Rollback targets are
+# recorded in status.md.
+images:
+  nova:
+    repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova
+    tag: "20260817-1245-nocache"
+
+  # One image, three Deployments. accounts, transactions, and products are separate
+  # entrypoints into the same container, so they promote together by construction —
+  # there is no way to leave one connector on a stale build.
+  mcp:
+    repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers
+    tag: "20260817-1148-lock"

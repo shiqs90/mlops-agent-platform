@@ -1,0 +1,73 @@
+# The nova application — the charts/nova Helm chart, synced from git.
+#
+# ARGO CD DOES NOT RUN `helm install`. It runs `helm template` and applies the
+# output. There is no Helm release, nothing in `helm list -n nova`, and no
+# `helm rollback` — Argo CD's own history is the rollback mechanism. This surprises
+# people who go looking for a release that was never created. The practical
+# consequences: Helm hooks are handled by Argo CD's own hook support rather than by
+# Helm, and `helm diff` against the cluster will not work. `argocd app diff nova` is
+# the equivalent.
+#
+# NO `resources-finalizer.argocd.argoproj.io`, ON PURPOSE. That finalizer is in most
+# tutorials and it makes `kubectl delete application nova` cascade into deleting
+# every resource it manages — including the Postgres StatefulSet holding the seeded
+# banking data. Without it, deleting the Application orphans the workloads instead:
+# they keep running, unmanaged, and can be re-adopted by re-creating the Application.
+# For a stateful app that is the safer default. Add the finalizer when the workload
+# is genuinely disposable and you want `delete app` to mean `delete everything`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nova
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shiqs90/mlops-agent-platform.git
+    targetRevision: main
+    # Argo CD auto-detects Chart.yaml here and renders with `helm template`,
+    # defaulting to values.yaml. No `helm:` block needed until we override it.
+    path: charts/nova
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nova
+
+  syncPolicy:
+    automated:
+      # prune: a resource deleted from git gets deleted from the cluster. Without
+      # it, git is only additive — you can ship a new resource but never retire one,
+      # and the cluster slowly accumulates things no manifest describes. Safe for
+      # the PVCs here because volumeClaimTemplate PVCs are created by the StatefulSet
+      # controller, not by Argo, so they are not in the managed set and are not pruned.
+      prune: true
+      # selfHeal: a manual `kubectl edit` gets reverted within ~3 minutes. This is
+      # the setting that actually ends manual deploys — without it, `kubectl` still
+      # "works" and git quietly stops being the truth.
+      #
+      # It WILL fight you while debugging. The escape hatch is to disable it for the
+      # duration rather than to leave it off:
+      #   argocd app set nova --sync-policy none
+      #   ... debug ...
+      #   argocd app set nova --sync-policy automated --self-heal --auto-prune
+      selfHeal: true
+
+    syncOptions:
+      # The nova namespace is declared by templates/postgres.yaml, so Argo creates it
+      # as an ordinary resource. Left false so exactly one thing declares the
+      # namespace, and it is a manifest in git rather than a sync flag.
+      - CreateNamespace=false
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  # Health assessment noise suppression. ExternalSecret reports Progressing until its
+  # first successful sync, which on a cold cluster can outlast the retry budget and
+  # leave the app Degraded even though it recovers. Nothing to ignore yet — kept as
+  # the documented place to put it when it shows up.
+  ignoreDifferences: []

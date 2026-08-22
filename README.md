@@ -37,7 +37,7 @@ Customer: "Transfer AED 2,000 to my savings."
 Nova:  → pauses for human approval before executing the write
 ```
 
-## The loop this project exists to build
+## The loop this project builds
 
 ```
 1. You change something          prompt, model, tool description, connector
@@ -90,6 +90,9 @@ credential on the path.
 Generated from `terraform-gcp/` and `k8s/` by
 [`docs/diagrams/nova-gke.py`](docs/diagrams/nova-gke.py). Every edge, the trust boundaries, and
 the tradeoffs behind each choice: [docs/architecture-gke.md](docs/architecture-gke.md).
+
+## Tracing
+
 
 ## The five gates
 

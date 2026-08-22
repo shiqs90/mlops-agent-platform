@@ -4,7 +4,7 @@ Living to-do tracker. Update the checkbox and date when a step lands. Design rat
 `IMPLEMENTATION-PLAN.md`; the interview-facing summary is `README.md`. This file is just
 "what's done, what's next."
 
-Last updated: 2026-08-16
+Last updated: 2026-08-19
 
 **Rescoped 2026-08-15/16** — from a DistilBERT/banking77 classifier pipeline to an MLOps
 platform for a tool-calling agent, where evaluation is the deployment gate. GitOps delivery was
@@ -37,7 +37,7 @@ is something worth gating.
 
 ## Housekeeping
 
-- [ ] `git init` — there's a `.github/` and `.gitignore` but no repo yet
+- [x] `git init` — repo live, 7 commits through 2026-08-18
 - [ ] Check `authorized_cidr` (`variables.tf:90`) against current public IP before applying —
       `curl -s -4 ifconfig.me`. Stale value = `kubectl` hangs with no clear error.
 
@@ -106,8 +106,10 @@ E1 depends on.*
       and Cloud Build also builds natively on amd64, sidestepping the arm64 `exec format error`
       that bites when building on Apple silicon for GKE nodes
 - [x] All three Deployments Running, serving StreamableHTTP on :8080
-- [ ] verify: `tools/list` returns the expected tools per server
-- [ ] verify: a SQL query and the equivalent tool call agree
+- [x] verify: `tools/list` returns the expected tools per server — 9 tools across the three
+      servers, confirmed via `/healthz`
+- [x] verify: a SQL query and the equivalent tool call agree — `check_balance(ACC-00004)`
+      returns 185,254.95 AED, matching the DB exactly
 
 ## Phase 2 — Nova agent (~8h) — mostly done 2026-08-17
 
@@ -145,13 +147,19 @@ E1 depends on.*
 - [x] `docs/DEBUGGING.md` written — command playbook by symptom
 - [x] War stories #7–14 recorded in `PROJECT7-SUMMARY.md`
 
-### Deferred from Phase 2
+### Deferred from Phase 2 — cleared 2026-08-19
 
-- [ ] FastAPI + LangChain `create_agent`
-- [ ] MCP adapter binding the three servers as tools
-- [ ] Redis StatefulSet + LangGraph checkpointer (session memory)
-- [ ] `trace_id` issued on request entry, returned in response header
-- [ ] verify: single-tool question correct; "and last month?" resolves from memory
+This list was stale; every item had in fact landed. Retained rather than deleted because one
+of them shipped differently than planned.
+
+- [x] FastAPI + LangChain `create_agent`
+- [x] MCP adapter binding the three servers as tools
+- [x] Redis StatefulSet + LangGraph checkpointer (session memory)
+- [x] `trace_id` issued on request entry — **returned in the response BODY, not a header.**
+      The plan said header; the code never did that. The body is the right place here: the
+      eval runner already parses the JSON for `tool_calls` and `usage`, so a header would be
+      a second thing to read for no benefit. Fixed the doc, not the code.
+- [x] verify: single-tool question correct; follow-up resolves from memory
 
 ## Phase 2.5 — PII masking + human approval middleware (~2h)
 
@@ -163,15 +171,78 @@ LangChain prebuilt middleware. Banking makes both **required, not decorative**.
 - [ ] verify: an account number never appears in the outbound prompt (check the Langfuse trace);
       a transfer request halts and waits rather than executing
 
-## Phase 3 — Observability (~5h)
+## Phase 3 — Observability (~5h) — DONE 2026-08-19
 
-- [ ] **Decide: Langfuse self-hosted vs cloud free tier**
-- [ ] Langfuse + LangChain callback handler
-- [ ] kube-prometheus-stack
-- [ ] Nova metrics: rate, errors, p50/p95/p99, tool counts + latency by tool, tokens/request
-- [ ] verify: one question → one trace with nested LLM/tool/LLM spans; header `trace_id` matches
+- [x] **Decided: Langfuse cloud free tier.** Self-hosting Langfuse means running its own
+      Postgres and ClickHouse — more billable cluster than the thing being observed.
+- [x] Langfuse + LangChain callback handler — one handler instruments the whole agent.
+      Deliberately optional: missing keys leave Nova running untraced rather than refusing to
+      start (`optional: true` on the Secret refs). Observability must not take down what it
+      observes.
+- [x] kube-prometheus-stack installed via Helm. The two `...SelectorNilUsesHelmValues=false`
+      flags are load-bearing — without them the operator only picks up monitors carrying its
+      own release label, and the ServiceMonitor is ignored silently, with no error and an
+      empty graph.
+- [x] Nova metrics at `/metrics`: `nova_requests_total{status}`, `nova_request_duration_seconds`,
+      `nova_tool_calls_total{tool}`, `nova_tokens_total{direction}`, `nova_cost_usd_total`,
+      `nova_tools_per_turn`, plus `nova_memory_persistent` / `nova_tracing_enabled` gauges
+- [x] `k8s/monitoring.yaml` applied — ServiceMonitor + 5 alert rules, target `up=1`
+- [x] verify: one question → one Langfuse trace; metadata `trace_id` matches the response body
+- [x] verify: counters move correctly — 3 requests → `requests_total{ok}=3`,
+      `check_balance=2`, `get_cards=1`, cost $0.0185
 
-## Phase 4 — Evaluation Hub (~10h)
+### What the first real numbers showed
+
+**93% of spend is INPUT tokens** (17,209 in / 264 out across 3 turns, ~$0.0062/request). The
+answers are short; what costs money is what gets sent *to* the model every turn — system
+prompt, nine tool schemas, and the whole history resent each call. The cost levers are
+therefore tool-schema verbosity, history truncation, and prompt caching. Shortening answers
+would move nothing.
+
+Consequence for the cost gate: **cost-per-request is only comparable at equal conversation
+depth.** A longer conversation costs more per turn with identical behaviour. The golden set is
+mostly single-turn so the Phase 4 baseline is clean, but E2's live-traffic scoring will see
+real multi-turn sessions and the distribution will look alarming until it is normalised by
+`history_messages`.
+
+### Counters are not durable state
+
+An in-process Prometheus counter resets to zero on every pod restart — by design, since
+`rate()` and `increase()` detect the reset. So `sum(nova_requests_total)` lies after a restart;
+`sum(increase(nova_requests_total[24h]))` does not. The alert rules all use `rate`, so they are
+correct as written. Related trap seen live: a *labelled* counter does not exist at all until
+its first `.inc()`, so `nova_requests_total` is absent from `/metrics` on a fresh process while
+the unlabelled `nova_cost_usd_total` already reads 0.0. An absent series and a zero series mean
+different things.
+
+## Phase 4 — Evaluation Hub (~10h) — NEXT
+
+The scoring logic already exists and has been run: `eval/run_eval.py` (247 lines) plus
+`eval/golden/questions.yaml`, with two result files at the repo root as evidence. What remains
+is **packaging it as a CRD + controller**, not writing it. Validating the logic as a script
+first was deliberate — packaging logic you have not validated is how you end up debugging
+Kubernetes when the problem is a scoring bug.
+
+**Two golden-set fixes found during Phase 3 verification, do these before generating any
+baseline:**
+
+- [ ] `gs-002` points at `ACC-00004`, which has **zero cards**. The agent handled it correctly
+      (said "no cards" rather than inventing any), but as a coverage case it is weak: an empty
+      result makes `groundedness` trivially passable and never tests whether the agent can read
+      card fields. Repoint it at an account that has cards; move the empty case to the `refuse`
+      shape, where it belongs.
+- [ ] The `memory` shape tests **reference resolution** ("that account" → ACC-00004) but not
+      **staleness** — re-asking a question whose answer is already in context, where a lazy
+      agent skips the tool and answers from history (war story #18). These are opposite failure
+      modes: one wants the agent to use context, the other forbids it. Needs its own case, where
+      `expect_tools` being non-empty is the entire assertion. Note the failure looks *better*
+      than the pass — faster, cheaper, right number — until the underlying data changes.
+
+- [ ] **Decide: swap `NOVA_JUDGE_MODEL` to `claude-sonnet-5` before generating any baseline.**
+      Currently Haiku in `k8s/nova.yaml`, while README and the notes below both say Sonnet.
+      One env change plus a rollout, no rebuild. It matters because the judge model is part of
+      what an eval run is versioned by — swapping mid-Phase-4 shifts every groundedness score
+      with no change to Nova.
 
 - [ ] Generate ~30 candidate questions from tool schemas; curate to ~18
 - [ ] Tag `expect_tools` + `expect_params`; SQL-computed answers where a literal is wanted

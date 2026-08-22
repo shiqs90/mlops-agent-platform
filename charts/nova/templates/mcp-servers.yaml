@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          image: "{{ .Values.images.mcp.repository }}:{{ .Values.images.mcp.tag }}"
           command: ["python", "accounts.py"]
           ports: [{containerPort: 8080}]
           env:
@@ -71,7 +71,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          image: "{{ .Values.images.mcp.repository }}:{{ .Values.images.mcp.tag }}"
           command: ["python", "transactions.py"]
           ports: [{containerPort: 8080}]
           env:
@@ -109,7 +109,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers:IMAGE_TAG
+          image: "{{ .Values.images.mcp.repository }}:{{ .Values.images.mcp.tag }}"
           command: ["python", "products.py"]
           ports: [{containerPort: 8080}]
           env:
