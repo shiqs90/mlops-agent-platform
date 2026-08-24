@@ -1,3 +1,14 @@
+# PINNED: argo/argo-cd chart 10.4.0 -> Argo CD v3.5.1 (selected 2026-08-24).
+#
+#   helm install argocd argo/argo-cd --version 10.4.0 \
+#     --namespace argocd --create-namespace \
+#     --values gitops/bootstrap/argocd-values.yaml
+#
+# The version lives here rather than only in someone's shell history because
+# `helm install` without --version resolves to whatever the repo serves that day.
+# Same discipline as nova/requirements.lock, and for the same reason: three outages
+# in this build came from dependency resolution rather than from code.
+#
 # Argo CD Helm values, trimmed for a 2-node e2-standard-4 pool that is already
 # running kube-prometheus-stack, ESO, Postgres, Redis, Nova, and three MCP servers.
 #
@@ -25,7 +36,31 @@ notifications:
 applicationSet:
   # Generates Applications from templates across many repos/clusters. App-of-apps
   # uses plain Application resources and does not need it.
-  enabled: false
+  #
+  # `applicationSet.enabled: false` DOES NOT EXIST in chart 10.x — the toggle was
+  # removed and the controller became a core component. Setting it did nothing, and
+  # Helm reported no error: an unknown value is stored and silently ignored, so
+  # `helm get values` showed `enabled: false` while the pod ran anyway. Proven by
+  # rendering the chart twice and comparing — expected 28 then 0, got 28 then 28:
+  #   helm template argocd argo/argo-cd --version 10.4.0 \
+  #     | grep -c applicationset-controller
+  #   helm template argocd argo/argo-cd --version 10.4.0 \
+  #     --set applicationSet.enabled=false | grep -c applicationset-controller
+  # A live `enabled` flag guards the whole template file with {{- if }}, so false
+  # drops every resource at once. Equal counts mean no such guard exists.
+  #
+  # Kept at the chart default rather than forced to 0. The 10.x chart treats this as
+  # a core component, and running one idle controller (~50-100m) is cheaper than
+  # carrying a local deviation we would have to re-justify every chart upgrade.
+  # ApplicationSet generators may earn their keep later anyway — one Application per
+  # model, or per environment.
+  #
+  # THE GENERAL LESSON: `helm get values` shows what you SUPPLIED, not what took
+  # effect. `helm get values -a` shows the computed merge (it would have shown
+  # `replicas: 1` here immediately). `helm get manifest` shows what was applied.
+  # Same failure shape as the ESO v1/v1beta1 war story — the installed artifact
+  # decides, not the docs.
+  replicas: 1
 
 configs:
   params:

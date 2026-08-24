@@ -84,10 +84,11 @@ variable "authorized_cidr" {
     This is a residential IP and WILL rotate. When kubectl starts hanging with a timeout
     rather than a clear error, that is this. Fix:
       curl -s -4 ifconfig.me                       # new address
-      terraform apply -var="authorized_cidr=<new>/32"
+      update the ip addess below
+      terraform apply
   EOT
   type        = string
-  default     = "83.110.175.141/32"
+  default     = "86.98.166.216/32"   # rotated 2026-08-24
 }
 
 variable "machine_type" {

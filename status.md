@@ -186,7 +186,7 @@ LangChain prebuilt middleware. Banking makes both **required, not decorative**.
 - [x] Nova metrics at `/metrics`: `nova_requests_total{status}`, `nova_request_duration_seconds`,
       `nova_tool_calls_total{tool}`, `nova_tokens_total{direction}`, `nova_cost_usd_total`,
       `nova_tools_per_turn`, plus `nova_memory_persistent` / `nova_tracing_enabled` gauges
-- [x] `k8s/monitoring.yaml` applied — ServiceMonitor + 5 alert rules, target `up=1`
+- [x] `charts/nova/templates/monitoring.yaml` applied — ServiceMonitor + 6 alert rules, target `up=1`
 - [x] verify: one question → one Langfuse trace; metadata `trace_id` matches the response body
 - [x] verify: counters move correctly — 3 requests → `requests_total{ok}=3`,
       `check_balance=2`, `get_cards=1`, cost $0.0185
