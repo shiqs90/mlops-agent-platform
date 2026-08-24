@@ -43,19 +43,35 @@ configs:
     # timeout.reconciliation: 180s
 
 controller:
+  # The application-controller — the reconciliation engine, and the only component
+  # that actually changes the cluster. Loop: ask repo-server what git says, ask the
+  # Kubernetes API what is live, diff them, apply the difference. `prune` and
+  # `selfHeal` are its behaviours, not the server's.
+  #
+  # The heaviest of the four, and the reason is memory: it keeps an in-memory cache
+  # of every resource it manages so it can diff without re-listing the API on each
+  # pass. That cache grows with the size of the cluster, not the size of the repo —
+  # which is the opposite of repo-server below, and why these two numbers differ.
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 1Gi}
 
 repoServer:
-  # Clones the repo and runs `kustomize build`. Memory scales with repo size and
-  # manifest count, both small here.
+  # The ONLY component that touches git. Clones the repo, runs `helm template` on
+  # charts/nova, hands the rendered YAML back. It never talks to the Kubernetes API
+  # — it turns source into manifests and nothing else.
+  #
+  # Works in bursts (on a sync, or when the ~180s poll finds a new commit) and holds
+  # one repo's manifests at a time, so it needs less headroom than the controller.
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 512Mi}
 
 server:
-  # API + UI.
+  # API, web UI, and the endpoint the `argocd` CLI talks to. NOT in the
+  # reconciliation path: if this pod dies, syncing carries on normally and all you
+  # lose is your ability to watch it. Useful to know at 3am — "the Argo CD UI is
+  # down" and "deployments are broken" are unrelated statements.
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 256Mi}
