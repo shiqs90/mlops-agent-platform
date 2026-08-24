@@ -4,12 +4,14 @@ Living to-do tracker. Update the checkbox and date when a step lands. Design rat
 `IMPLEMENTATION-PLAN.md`; the interview-facing summary is `README.md`. This file is just
 "what's done, what's next."
 
-Last updated: 2026-08-19
+Last updated: 2026-08-24
 
 **Rescoped 2026-08-15/16** — from a DistilBERT/banking77 classifier pipeline to an MLOps
 platform for a tool-calling agent, where evaluation is the deployment gate. GitOps delivery was
 moved out of the core build into enhancements: a deployment gate is only meaningful once there
-is something worth gating.
+is something worth gating. **Partly reversed 2026-08-24** — Argo CD sync was pulled back into
+the core build as Phase 4a because the remaining phases are the most manifest-heavy in the
+project. The gating half (Argo Rollouts + CI) stays open as 4b.
 
 ## Carried forward — still valid
 
@@ -43,7 +45,7 @@ is something worth gating.
 
 ---
 
-# CORE BUILD (~39h)
+# CORE BUILD (~48h)
 
 End state: a working agent with its safety controls in place (PII masking, approval on writes),
 plus an automated evaluation service that scores it on demand and on a schedule, and alerts when
@@ -61,7 +63,7 @@ quality drifts.
 
 *Scope grew by ~2h: secrets management was added rather than using `kubectl create secret`,
 because an imperative Secret lives nowhere in git and breaks the reconstruct-from-repo property
-E1 depends on.*
+Phase 4 depends on.*
 
 - [x] **Scale nodes up** — 2 × `e2-standard-4` Ready (2026-08-16). Nothing schedules at 0:
       ```bash
@@ -121,7 +123,7 @@ E1 depends on.*
 - [x] `k8s/redis.yaml` — **`redis/redis-stack-server`**, not `redis:7-alpine`; the
       checkpointer needs RediSearch (war story #11)
 - [x] `k8s/nova.yaml` — Deployment + Service, plain Deployment on purpose (becomes an
-      Argo Rollout in E1, not before)
+      Argo Rollout in 4b, not before)
 - [x] Built via Cloud Build, deployed, **9 tools loaded** across all three MCP servers
 - [x] Redis checkpointer connects — `session memory: redis at ...`, no fallback
 - [x] **verify: single-tool question returns a correct balance** — `185,254.95 AED`,
@@ -130,7 +132,7 @@ E1 depends on.*
       "July 2026" → `2026-07-01`/`2026-07-31`, `category: salary`
 - [x] **Reporting bug fixed** (war story #17) — `result["messages"]` is the whole thread, so
       `tool_calls` and `usage` were accumulating across turns. Would have failed every
-      multi-turn Phase 4 eval case against a correctly-behaving agent. Now sliced per turn;
+      multi-turn Phase 5 eval case against a correctly-behaving agent. Now sliced per turn;
       `turn_messages` / `history_messages` added so the cost gate can tell an inefficient
       agent from a long conversation.
 - [x] **Stale-answer bug fixed** (war story #18) — the agent sometimes answered repeat
@@ -201,7 +203,7 @@ would move nothing.
 
 Consequence for the cost gate: **cost-per-request is only comparable at equal conversation
 depth.** A longer conversation costs more per turn with identical behaviour. The golden set is
-mostly single-turn so the Phase 4 baseline is clean, but E2's live-traffic scoring will see
+mostly single-turn so the Phase 5 baseline is clean, but E2's live-traffic scoring will see
 real multi-turn sessions and the distribution will look alarming until it is normalised by
 `history_messages`.
 
@@ -215,7 +217,63 @@ its first `.inc()`, so `nova_requests_total` is absent from `/metrics` on a fres
 the unlabelled `nova_cost_usd_total` already reads 0.0. An absent series and a zero series mean
 different things.
 
-## Phase 4 — Evaluation Hub (~10h) — NEXT
+## Phase 4 — GitOps delivery (~9h) — 4a DONE 2026-08-24, 4b OPEN
+
+**The phase that makes evaluation an actual deployment gate.** Until this lands, the Hub
+produces a verdict but nothing consumes it.
+
+### 4a — Argo CD sync — DONE 2026-08-24
+
+Pulled ahead of Phase 2.5/5 deliberately: the phases that remain are the most manifest-heavy
+in the project (CRD, RBAC, controller Deployment, runner Job, CronJob, PrometheusRule), which
+is the worst possible time to still be applying by hand.
+
+- [x] Argo CD installed via Helm, **chart pinned 10.4.0 → v3.5.1**. dex + notifications
+      disabled; `applicationSet.enabled: false` does NOT exist in 10.x and was silently
+      ignored (war story #20) — left at the chart default of 1 replica.
+- [x] `k8s/` manifests packaged as `charts/nova` — a Helm chart, NOT Kustomize, because Helm
+      was already in the stack (ESO, kube-prometheus-stack, Argo CD) and Kustomize would have
+      been a fourth way to render YAML. Deliberately thin: only the 4 image refs templated.
+- [x] `charts/nova/values.yaml` holds the image tags — the file CI writes in 4b. `git log
+      --follow` on it is the deploy record.
+- [x] `k8s/seed-job.yaml` deliberately EXCLUDED from the chart. `ttlSecondsAfterFinished: 3600`
+      makes it self-delete hourly; Argo CD with selfHeal reads that as drift and recreates it,
+      and the job opens with TRUNCATE. Self-deleting resources and auto-sync are incompatible.
+- [x] `gitops/bootstrap/root-app.yaml` (app-of-apps) + `gitops/apps/nova.yaml`. No
+      `resources-finalizer` on nova on purpose — it would make `delete application` cascade
+      into deleting the Postgres StatefulSet.
+- [x] verify: both Applications `Synced` / `Healthy`; adoption of the kubectl-created
+      resources was clean, no OutOfSync
+- [x] verify: **selfHeal** — `kubectl scale deploy/nova --replicas=3` reverted in **1 second**
+- [x] verify: **git drives the cluster** — `replicas: 2` committed, deployed with no kubectl,
+      ~1 minute after the push
+
+**Two clocks, and they are not the same** (this was measured, not assumed):
+
+| Drift | Detected by | Latency |
+|---|---|---|
+| Cluster edited by hand | Kubernetes **watch** on managed resources | ~1s |
+| Git commit | **Poll**, `timeout.reconciliation` 180s | 0–3 min, ~1 min typical |
+
+selfHeal never re-reads git — the controller already holds the rendered desired state, so a
+watch event is enough. The 180s interval only governs noticing git changed. Webhooks (4b)
+fix the second clock, not the first.
+
+**Nova at 2 replicas stays correct only because of the Redis checkpointer** — session memory
+lives outside the pod. On the in-process fallback, turn 2 would miss its history whenever it
+landed on the other replica. `nova_memory_persistent` is the gauge standing between the
+platform and that.
+
+### 4b — Progressive delivery + CI (~5h) — OPEN
+
+- [ ] Argo Rollouts blue-green; **set `scaleDownDelaySeconds` to several minutes**
+- [ ] `prePromotionAnalysis` — quality **and** cost via Prometheus provider
+- [ ] `postPromotionAnalysis` — live metrics
+- [ ] GitHub Actions: contract checks → commit manifest → smoke test
+- [ ] verify: prompt change ships with no `kubectl`; bad prompt blocked + auto-rolled-back;
+      token-wasteful prompt blocked by the **cost** gate while passing quality
+
+## Phase 5 — Evaluation Hub (~10h) — NEXT
 
 The scoring logic already exists and has been run: `eval/run_eval.py` (247 lines) plus
 `eval/golden/questions.yaml`, with two result files at the repo root as evidence. What remains
@@ -238,11 +296,13 @@ baseline:**
       `expect_tools` being non-empty is the entire assertion. Note the failure looks *better*
       than the pass — faster, cheaper, right number — until the underlying data changes.
 
-- [ ] **Decide: swap `NOVA_JUDGE_MODEL` to `claude-sonnet-5` before generating any baseline.**
-      Currently Haiku in `k8s/nova.yaml`, while README and the notes below both say Sonnet.
-      One env change plus a rollout, no rebuild. It matters because the judge model is part of
-      what an eval run is versioned by — swapping mid-Phase-4 shifts every groundedness score
-      with no change to Nova.
+- [x] **Decided 2026-08-24: the judge stays `claude-haiku-4-5`.** Sonnet is 3x Haiku on both
+      input and output (`eval/run_eval.py` `RATES`), and the baseline gets regenerated often
+      during Phase 5. What matters is that the judge is **pinned**, not which model it is: the
+      judge is part of what an eval run is versioned by, so scores are only comparable across
+      runs judged by the same model. Revisit if Haiku grades the `refuse` shape noisily.
+      Set at `charts/nova/templates/nova.yaml:47` — the chart, not `k8s/`, since Phase 4a.
+      **Reconcile the docs:** README and IMPLEMENTATION-PLAN still say Sonnet.
 
 - [ ] Generate ~30 candidate questions from tool schemas; curate to ~18
 - [ ] Tag `expect_tools` + `expect_params`; SQL-computed answers where a literal is wanted
@@ -253,7 +313,7 @@ baseline:**
 - [ ] `/metrics` endpoint scraped by Prometheus
 - [ ] verify: `kubectl apply` an EvaluationRun → Job runs → CR status shows four scores → same in Prometheus
 
-## Phase 4.5 — Drift Tier 1, scheduled replay (~2h)
+## Phase 5.5 — Drift Tier 1, scheduled replay (~2h)
 
 - [ ] CronJob creating a scheduled `EvaluationRun` against production
 - [ ] PrometheusRule alerting on score thresholds
@@ -261,61 +321,7 @@ baseline:**
 
 ---
 
-# ENHANCEMENTS (~26h)
-
-## E1 — GitOps delivery (~9h)
-
-**The phase that makes evaluation an actual deployment gate.** Until this lands, the Hub
-produces a verdict but nothing consumes it.
-
-### E1a — Argo CD sync — DONE 2026-08-24
-
-Pulled ahead of Phase 2.5/4 deliberately: the phases that remain are the most manifest-heavy
-in the project (CRD, RBAC, controller Deployment, runner Job, CronJob, PrometheusRule), which
-is the worst possible time to still be applying by hand.
-
-- [x] Argo CD installed via Helm, **chart pinned 10.4.0 → v3.5.1**. dex + notifications
-      disabled; `applicationSet.enabled: false` does NOT exist in 10.x and was silently
-      ignored (war story #20) — left at the chart default of 1 replica.
-- [x] `k8s/` manifests packaged as `charts/nova` — a Helm chart, NOT Kustomize, because Helm
-      was already in the stack (ESO, kube-prometheus-stack, Argo CD) and Kustomize would have
-      been a fourth way to render YAML. Deliberately thin: only the 4 image refs templated.
-- [x] `charts/nova/values.yaml` holds the image tags — the file CI writes in E1b. `git log
-      --follow` on it is the deploy record.
-- [x] `k8s/seed-job.yaml` deliberately EXCLUDED from the chart. `ttlSecondsAfterFinished: 3600`
-      makes it self-delete hourly; Argo CD with selfHeal reads that as drift and recreates it,
-      and the job opens with TRUNCATE. Self-deleting resources and auto-sync are incompatible.
-- [x] `gitops/bootstrap/root-app.yaml` (app-of-apps) + `gitops/apps/nova.yaml`. No
-      `resources-finalizer` on nova on purpose — it would make `delete application` cascade
-      into deleting the Postgres StatefulSet.
-- [x] verify: both Applications `Synced` / `Healthy`; adoption of the kubectl-created
-      resources was clean, no OutOfSync
-- [x] verify: **selfHeal** — `kubectl scale deploy/nova --replicas=3` reverted in **1 second**
-- [x] verify: **git drives the cluster** — `replicas: 2` committed, deployed with no kubectl,
-      ~1 minute after the push
-
-**Two clocks, and they are not the same** (this was measured, not assumed):
-
-| Drift | Detected by | Latency |
-|---|---|---|
-| Cluster edited by hand | Kubernetes **watch** on managed resources | ~1s |
-| Git commit | **Poll**, `timeout.reconciliation` 180s | 0–3 min, ~1 min typical |
-
-selfHeal never re-reads git — the controller already holds the rendered desired state, so a
-watch event is enough. The 180s interval only governs noticing git changed. Webhooks (E1b)
-fix the second clock, not the first.
-
-**Nova at 2 replicas stays correct only because of the Redis checkpointer** — session memory
-lives outside the pod. On the in-process fallback, turn 2 would miss its history whenever it
-landed on the other replica. `nova_memory_persistent` is the gauge standing between the
-platform and that.
-
-- [ ] Argo Rollouts blue-green; **set `scaleDownDelaySeconds` to several minutes**
-- [ ] `prePromotionAnalysis` — quality **and** cost via Prometheus provider
-- [ ] `postPromotionAnalysis` — live metrics
-- [ ] GitHub Actions: contract checks → commit manifest → smoke test
-- [ ] verify: prompt change ships with no `kubectl`; bad prompt blocked + auto-rolled-back;
-      token-wasteful prompt blocked by the **cost** gate while passing quality
+# ENHANCEMENTS (~17h)
 
 ## E2 — Drift Tier 2, live-traffic scoring (~4h)
 
@@ -343,7 +349,7 @@ platform and that.
 
 ## Notes
 
-- **Models:** `claude-haiku-4-5` for the agent, `claude-sonnet-5` for the LLM judge. Pin the
+- **Models:** `claude-haiku-4-5` for the agent, `claude-haiku-4-5` for the LLM judge (decided 2026-08-24 — cost; revisit if grading proves noisy). Pin the
   judge — an upgrade changes scores with no change to the agent.
 - **Secrets — accepted tradeoff.** Terraform generates the Postgres password with
   `random_password`, so it sits in HCP state in plaintext (twice: `result` and `secret_data`).
