@@ -268,7 +268,48 @@ baseline:**
 **The phase that makes evaluation an actual deployment gate.** Until this lands, the Hub
 produces a verdict but nothing consumes it.
 
-- [ ] Argo CD Applications (app-of-apps)
+### E1a — Argo CD sync — DONE 2026-08-24
+
+Pulled ahead of Phase 2.5/4 deliberately: the phases that remain are the most manifest-heavy
+in the project (CRD, RBAC, controller Deployment, runner Job, CronJob, PrometheusRule), which
+is the worst possible time to still be applying by hand.
+
+- [x] Argo CD installed via Helm, **chart pinned 10.4.0 → v3.5.1**. dex + notifications
+      disabled; `applicationSet.enabled: false` does NOT exist in 10.x and was silently
+      ignored (war story #20) — left at the chart default of 1 replica.
+- [x] `k8s/` manifests packaged as `charts/nova` — a Helm chart, NOT Kustomize, because Helm
+      was already in the stack (ESO, kube-prometheus-stack, Argo CD) and Kustomize would have
+      been a fourth way to render YAML. Deliberately thin: only the 4 image refs templated.
+- [x] `charts/nova/values.yaml` holds the image tags — the file CI writes in E1b. `git log
+      --follow` on it is the deploy record.
+- [x] `k8s/seed-job.yaml` deliberately EXCLUDED from the chart. `ttlSecondsAfterFinished: 3600`
+      makes it self-delete hourly; Argo CD with selfHeal reads that as drift and recreates it,
+      and the job opens with TRUNCATE. Self-deleting resources and auto-sync are incompatible.
+- [x] `gitops/bootstrap/root-app.yaml` (app-of-apps) + `gitops/apps/nova.yaml`. No
+      `resources-finalizer` on nova on purpose — it would make `delete application` cascade
+      into deleting the Postgres StatefulSet.
+- [x] verify: both Applications `Synced` / `Healthy`; adoption of the kubectl-created
+      resources was clean, no OutOfSync
+- [x] verify: **selfHeal** — `kubectl scale deploy/nova --replicas=3` reverted in **1 second**
+- [x] verify: **git drives the cluster** — `replicas: 2` committed, deployed with no kubectl,
+      ~1 minute after the push
+
+**Two clocks, and they are not the same** (this was measured, not assumed):
+
+| Drift | Detected by | Latency |
+|---|---|---|
+| Cluster edited by hand | Kubernetes **watch** on managed resources | ~1s |
+| Git commit | **Poll**, `timeout.reconciliation` 180s | 0–3 min, ~1 min typical |
+
+selfHeal never re-reads git — the controller already holds the rendered desired state, so a
+watch event is enough. The 180s interval only governs noticing git changed. Webhooks (E1b)
+fix the second clock, not the first.
+
+**Nova at 2 replicas stays correct only because of the Redis checkpointer** — session memory
+lives outside the pod. On the in-process fallback, turn 2 would miss its history whenever it
+landed on the other replica. `nova_memory_persistent` is the gauge standing between the
+platform and that.
+
 - [ ] Argo Rollouts blue-green; **set `scaleDownDelaySeconds` to several minutes**
 - [ ] `prePromotionAnalysis` — quality **and** cost via Prometheus provider
 - [ ] `postPromotionAnalysis` — live metrics
