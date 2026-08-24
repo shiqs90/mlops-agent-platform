@@ -53,11 +53,6 @@ spec:
       #   argocd app set nova --sync-policy automated --self-heal --auto-prune
       selfHeal: true
 
-    syncOptions:
-      # The nova namespace is declared by templates/postgres.yaml, so Argo creates it
-      # as an ordinary resource. Left false so exactly one thing declares the
-      # namespace, and it is a manifest in git rather than a sync flag.
-      - CreateNamespace=false
 
     retry:
       limit: 5

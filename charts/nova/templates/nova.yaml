@@ -28,7 +28,7 @@ metadata:
   name: nova
   namespace: nova
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: {app: nova}
   template:
