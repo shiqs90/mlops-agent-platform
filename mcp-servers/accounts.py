@@ -1,7 +1,7 @@
 """mcp-accounts — balances, account details, and the one write path.
 
 Tool descriptions are load-bearing. The agent chooses tools from these strings, and
-`tool_selection` in the evaluation scores exactly that choice — so a vague
+`tool_correctness` in the evaluation scores exactly that choice — so a vague
 description shows up as a routing failure, not a documentation problem. Each one
 says when to call it, not just what it does.
 """

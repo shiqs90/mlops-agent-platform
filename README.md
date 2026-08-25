@@ -64,8 +64,8 @@ the golden set never covered, a connector quietly changing its response format.
 | **Tool calling** | Four tools across three connectors, incl. one consequential write |
 | **Enterprise connectors / MCP** | Three real MCP servers, consumed via LangChain's MCP adapter |
 | **Agent memory** | LangGraph checkpointer, Redis-backed session state |
-| **Evaluation** | Evaluation Hub — a Kubernetes controller running scored replays |
-| **LLM-as-judge** | `claude-sonnet-5` scoring groundedness, reference-free |
+| **Evaluation** | Scored replays as a Kubernetes `Job`/`CronJob`, gating deploys |
+| **LLM-as-judge** | `claude-haiku-4-5`, pinned — faithfulness + relevance reference-free |
 | **Golden + regression sets** | Curated coverage set; append-only never-again set |
 | **Drift monitoring** | Scheduled replay + sampled live-traffic scoring |
 | **Cost engineering** | Cost-per-request as a promotion gate; router distillation |
@@ -108,26 +108,52 @@ Quality and cost fail independently — a change can keep answering correctly wh
 twice the tokens through extra tool-loop iterations. Most portfolio projects gate only on
 quality.
 
-## The four metrics, and why they're separate
+## The six metrics, and why they're separate
 
-| Metric | Computed by | Needs ground truth? |
+Names are the field's names, not house style — `tool_correctness` and
+`argument_correctness` are [DeepEval](https://deepeval.com/docs/metrics-argument-correctness)'s,
+`faithfulness` and `answer_correctness` are RAGAS/LangChain's. Being understood costs
+nothing.
+
+| Metric | Computed by | Needs a reference answer? |
 |---|---|---|
-| `tool_selection` | Deterministic string compare | one-word annotation |
-| `parameter_accuracy` | Deterministic, after normalising dates/accounts | one-line annotation |
-| `groundedness` | LLM judge — is every claim supported by the tool result? | **no — reference-free** |
-| `cost_per_request` | Tokens from the trace × model rate | no |
+| `tool_correctness` | Deterministic set compare | one-word annotation |
+| `argument_correctness` | Deterministic key-value compare | one-line annotation |
+| `faithfulness` | LLM judge — is every claim supported by the tool result? | **no — reference-free** |
+| `answer_relevance` | LLM judge — does it answer the question asked? | **no** |
+| `answer_correctness` | LLM judge — is anything required missing? | yes — 3 of 18 cases |
+| `cost_per_request`, `latency_p95` | Tokens × model rate; run-level | no |
 
-One blended score tells you *something* broke. Four tell you *where*:
+The three judged metrics come from **one** API call. Three calls would triple judge
+spend and let the judge contradict itself on the same answer.
 
-| tool_selection | parameter_accuracy | groundedness | cost | Diagnosis |
-|---|---|---|---|---|
-| **↓** | ok | ↓ | ok | Routing regressed — prompt or tool descriptions |
-| ok | **↓** | ↓ | ok | Routing fine, argument extraction broke |
-| ok | ok | **↓** | ok | Right data fetched, model misread it |
-| ok | ok | ok | **↑** | Quality held, agent is looping or over-calling |
+One blended score tells you *something* broke. Six tell you *where*:
 
-`groundedness` being reference-free is what makes drift monitoring on live traffic possible —
-you can score a real customer question with no expected answer to compare against.
+| tool | args | faith | relev | corr | cost | Diagnosis |
+|---|---|---|---|---|---|---|
+| **↓** | ok | ↓ | ok | ok | ok | Routing regressed — prompt or tool descriptions |
+| ok | **↓** | ↓ | ok | ok | ok | Routing fine, argument extraction broke |
+| ok | ok | **↓** | ok | ok | ok | Right data fetched, model fabricated on top of it |
+| ok | ok | ok | **↓** | ok | ok | Answering a different question, correctly |
+| ok | ok | ok | ok | **↓** | ok | True but incomplete — the failure faithfulness cannot see |
+| ok | ok | ok | ok | ok | **↑** | Quality held, agent is looping or over-calling |
+
+**Why `answer_correctness` is not redundant** — the obvious objection is that faithfulness
+plus relevance already cover it, and for most cases they do. That was checked case by
+case, and references were cut from 6 cases to 3 as a result. The one gap neither can
+close is **omission**: faithfulness scores the claims that are *in* the answer and has no
+opinion about claims that should have been there and are not. An answer listing 2 of a
+customer's 5 accounts is 100% faithful and 100% wrong. No judge prompt fixes that,
+because the missing content isn't there to judge — which is why RAGAS defines
+answer_correctness as *coverage* against a reference.
+
+Each surviving reference therefore states **what must be covered**, never what the values
+are. `"a balance for every account list_accounts returned"` survives a reseed;
+`"8,200 AED on groceries"` is wrong the next time `db/seed.py` runs.
+
+`faithfulness` and `answer_relevance` being reference-free is what makes drift monitoring
+on live traffic possible — you can score a real customer question with no expected answer
+to compare against. `answer_correctness` cannot go there, by construction.
 
 ## Golden set vs regression set
 
@@ -149,7 +175,7 @@ No GPU at any point.
 |---|---|
 | GKE node pool | ~$0.29–0.38/hr — **scale to zero between sessions** |
 | GKE control plane | Free tier (zonal cluster) |
-| Claude API per ~18-question eval run | ~$0.17 (`haiku-4-5` agent + `sonnet-5` judge) |
+| Claude API per 18-question eval run | ~$0.02 (`haiku-4-5` agent + `haiku-4-5` judge, one judge call per case) |
 | Drift monitoring | ~$5/month nightly, ~$1.20/month weekly |
 
 ```bash

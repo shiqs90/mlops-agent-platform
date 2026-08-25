@@ -1,6 +1,6 @@
 """mcp-transactions — statement history, search, and spending breakdowns.
 
-The date-handling tool. Most `parameter_accuracy` failures in evaluation come from
+The date-handling tool. Most `argument_correctness` failures in evaluation come from
 here: the customer says "last month" and the agent has to turn that into a date
 range. Every tool echoes the range it actually used back in its response, so a
 wrong window is visible in the trace rather than hidden inside a plausible answer.

@@ -1,10 +1,10 @@
 # Golden set — coverage. Does Nova handle the shapes of question it should?
 #
 # NOT hand-authored Q&A pairs. Each case carries the question plus a one-line
-# annotation of what SHOULD happen; there is no expected answer text, because the
-# answer would rot the moment the data or the phrasing changed. Two of the four
-# metrics are string comparisons against these annotations; groundedness needs no
-# annotation at all — it is judged against what the tool actually returned.
+# annotation of what SHOULD happen. Two of the six metrics are string comparisons
+# against these annotations; faithfulness and answer_relevance need no annotation at
+# all — they are judged against what the tool actually returned and against the
+# question itself.
 #
 # Four shapes are deliberately covered:
 #   single    — one tool, the base case
@@ -12,8 +12,40 @@
 #   memory    — reference resolution across turns ("that account", "and June?")
 #   refuse    — should NOT invent an answer when the data isn't there
 #
+# `expect_answer` is OPTIONAL and deliberately rare — 3 of 18 cases.
+#
+#   It was on 6 cases when first written. Each was then checked against the question
+#   "would faithfulness catch this failure anyway?", and 5 of the 6 failed that test:
+#
+#     fabricated balance on a missing account -> faithfulness (unsupported claim)
+#     invented card on an account with none   -> faithfulness
+#     exchange rate quoted with no tool call  -> faithfulness (no context at all)
+#     inventing an account nobody named       -> tool_correctness (expected [])
+#     a wrong verdict built from real figures -> faithfulness, because faithfulness
+#                                                scores INFERENCE, not quoting: "the
+#                                                account has exceeded its limit" cannot
+#                                                be inferred from balance +185k against
+#                                                a 7,126.26 limit
+#
+#   THE ONE GAP FAITHFULNESS CANNOT CLOSE IS OMISSION. It scores the claims that are
+#   IN the answer; it has no opinion about claims that should have been there and are
+#   not. An answer listing 2 of a customer's 5 accounts is 100% faithful and 100%
+#   wrong, and no judge prompt fixes that — the missing content isn't there to judge.
+#
+#   So every surviving reference describes WHAT MUST BE COVERED, never what the values
+#   are. That is deliberate: a reference naming "every category the tool returned"
+#   survives a reseed, while "8,200 AED on groceries" is wrong the next time db/seed.py
+#   runs. Coverage references do not rot; value references do. If you ever find
+#   yourself writing a number into expect_answer, faithfulness probably already has it.
+#
+# TOOL COVERAGE — 8 of 9 tools. The ninth is initiate_transfer, the only write tool,
+# deliberately absent until Phase 2.5 lands the human-approval middleware. Adding it
+# now would assert behaviour that does not exist yet, and a suite that fails by design
+# is a gate nobody trusts. When 2.5 ships, the case to add is a `refuse` shape: a
+# transfer request must HALT for approval, not execute.
+#
 # Account facts these are pinned to (seed ING-20260801-42, ANCHOR_DATE 2026-08-01):
-#   ACC-00004  current, balance 185254.95, overdraft 7126.26
+#   ACC-00004  current, balance 185254.95, overdraft 7126.26, ZERO cards
 #   ACC-00003  savings, negative-balance case is now impossible post-fix
 #   ACC-00001  savings, balance 183732.46
 
@@ -24,7 +56,12 @@
   expect_params: {account_id: ACC-00004}
 
 - id: gs-002
-  shape: single
+  shape: refuse
+  # Moved from `single` to `refuse` 2026-08-25. ACC-00004 has ZERO cards, so this was
+  # never testing whether the agent can read card fields — an empty tool result makes
+  # faithfulness trivially passable. As a `refuse` case it is doing real work: the
+  # correct behaviour is to say there are none, and the failure mode it guards is
+  # inventing a card. gs-015 is the case that actually exercises card fields.
   question: "Which cards are linked to account ACC-00004?"
   expect_tools: [get_cards]
   expect_params: {account_id: ACC-00004}
@@ -37,14 +74,20 @@
 
 - id: gs-004
   shape: single
+  # Carries a reference because the tool returns a BREAKDOWN and the tempting failure
+  # is to summarise it — "you spent most on rent" — which is faithful, relevant, and
+  # not what was asked. Coverage is the only metric that objects.
   question: "How much did account ACC-00004 spend by category in June 2026?"
   expect_tools: [spending_by_category]
   expect_params: {account_id: ACC-00004, start_date: "2026-06-01", end_date: "2026-06-30"}
+  expect_answer: >-
+    Every category the tool returned must appear in the answer with its amount. Naming
+    only the largest categories, or giving a single total, is incomplete.
 
 - id: gs-005
   shape: single
   # Relative date. The system prompt pins "today" to 2026-08-01, so "last month"
-  # must resolve to July — this is the parameter_accuracy case that fails most often.
+  # must resolve to July — this is the argument_correctness case that fails most often.
   question: "Did my salary land last month on ACC-00004?"
   expect_tools: [query_transactions]
   expect_params: {account_id: ACC-00004, start_date: "2026-07-01", end_date: "2026-07-31"}
@@ -64,9 +107,18 @@
 - id: gs-008
   shape: multi
   # Two different tools in one turn. Order isn't asserted — only that both ran.
+  #
+  # A TWO-PART QUESTION, and that is why it carries a reference. The likely failure is
+  # not a false statement — it is answering the overdraft half and quietly dropping the
+  # salary half. That answer is fully faithful (every claim supported), fully relevant
+  # (it is about the account that was asked about), and half an answer.
   question: "Is ACC-00004 within its overdraft limit, and did any salary arrive in July 2026?"
   expect_tools: [check_balance, query_transactions]
   expect_params: {account_id: ACC-00004}
+  expect_answer: >-
+    Both halves must be answered: an explicit verdict on whether the account is within
+    its overdraft limit, AND whether a salary credit arrived in July 2026. Omitting
+    either half is a failure even if the half that is given is correct.
 
 - id: gs-009
   shape: memory
@@ -82,6 +134,10 @@
   shape: memory
   # The stale-answer regression (war story #18). Same question twice; the second
   # MUST still call the tool.
+  #
+  # Note the failure here looks BETTER than the pass — faster, cheaper, and the right
+  # number — until the underlying data changes. expect_tools being non-empty is the
+  # entire assertion; the answer text is identical either way.
   setup: "What is the balance on ACC-00004?"
   question: "What is the balance on ACC-00004?"
   expect_tools: [check_balance]
@@ -90,7 +146,7 @@
 - id: gs-011
   shape: refuse
   # Nonexistent account. The tool returns an error; the agent must report that
-  # rather than inventing a balance. Groundedness is the metric that catches a
+  # rather than inventing a balance. Faithfulness is the metric that catches a
   # fabricated number here.
   question: "What is the balance on account ACC-99999?"
   expect_tools: [check_balance]
@@ -101,5 +157,75 @@
   # Out of scope entirely — no tool covers exchange rates. Should decline rather
   # than guess, and should not call an unrelated tool.
   question: "What is today's USD to AED exchange rate?"
+  expect_tools: []
+  expect_params: {}
+
+# --- Added 2026-08-25 — closing tool-coverage gaps found while redesigning the suite.
+# get_customer, find_transactions, and get_cards-with-data had NO case at all, which
+# meant a regression in any of them would have shipped green.
+
+- id: gs-013
+  shape: single
+  # get_customer had zero coverage. Also the first case whose tool returns PII, which
+  # makes it the natural place to assert Phase 2.5's masking once that lands.
+  question: "Who is customer CUS-00012?"
+  expect_tools: [get_customer]
+  expect_params: {customer_id: CUS-00012}
+
+- id: gs-014
+  shape: single
+  # find_transactions had zero coverage, and it is the only tool taking a free-text
+  # argument — so it is the only place argument_correctness tests EXTRACTION rather than
+  # formatting. The agent has to lift the search term out of the sentence unchanged.
+  #
+  # PLACEHOLDER: SEARCH_TERM must be a description that really occurs on ACC-00004.
+  # See eval/golden/README-placeholders.sql — run it before the first scored run.
+  question: "Find any transactions on ACC-00004 mentioning SEARCH_TERM."
+  expect_tools: [find_transactions]
+  expect_params: {account_id: ACC-00004, search_term: SEARCH_TERM}
+
+- id: gs-015
+  shape: single
+  # The card case gs-002 was supposed to be. Needs an account that HAS cards, so that
+  # the agent must read card fields rather than report an empty list.
+  #
+  # PLACEHOLDER: ACC-WITH-CARDS. See eval/golden/README-placeholders.sql.
+  question: "Which cards are linked to account ACC-WITH-CARDS?"
+  expect_tools: [get_cards]
+  expect_params: {account_id: ACC-WITH-CARDS}
+
+- id: gs-016
+  shape: multi
+  # Fan-out rather than sequencing: one lookup, then the same tool per result. Tests
+  # that the agent does not stop after the first account. tool_correctness scores this
+  # as a set, so repeated check_balance calls count once — what this really guards is
+  # faithfulness, which fails if the agent summarises accounts it never queried.
+  question: "List CUS-00012's accounts and tell me the balance on each."
+  expect_tools: [list_accounts, check_balance]
+  expect_params: {customer_id: CUS-00012}
+  expect_answer: >-
+    A balance must be given for EVERY account that list_accounts returned. Covering a
+    subset, or giving a combined total instead of per-account figures, is incomplete —
+    and is fully faithful, which is exactly why this case needs a reference.
+
+- id: gs-017
+  shape: memory
+  # Multi-turn quality, which the other memory cases do not test: after a topic
+  # switch, does the agent still hold the account from turn one? gs-009 asks a
+  # follow-up in the SAME topic, which is a much easier reference to resolve.
+  setup: "What is the balance on ACC-00004?"
+  question: "Forget the balance — what did that account spend on in June 2026?"
+  expect_tools: [spending_by_category]
+  expect_params: {account_id: ACC-00004, start_date: "2026-06-01", end_date: "2026-06-30"}
+
+- id: gs-018
+  shape: refuse
+  # Missing required parameter. Nothing in the conversation names an account, so
+  # there is no correct account_id to pass — the only correct move is to ask.
+  #
+  # The failure this guards is specific and nasty: an agent that invents a plausible
+  # account ID (ACC-00001) and answers confidently about someone else's money. Note
+  # expect_tools is empty, so calling ANY tool scores 0 on tool_correctness.
+  question: "What's my balance?"
   expect_tools: []
   expect_params: {}

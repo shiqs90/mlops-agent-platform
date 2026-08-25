@@ -4,7 +4,7 @@ Living to-do tracker. Update the checkbox and date when a step lands. Design rat
 `IMPLEMENTATION-PLAN.md`; the interview-facing summary is `README.md`. This file is just
 "what's done, what's next."
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 **Rescoped 2026-08-15/16** — from a DistilBERT/banking77 classifier pipeline to an MLOps
 platform for a tool-calling agent, where evaluation is the deployment gate. GitOps delivery was
@@ -45,7 +45,7 @@ project. The gating half (Argo Rollouts + CI) stays open as 4b.
 
 ---
 
-# CORE BUILD (~48h)
+# CORE BUILD (~45.5h)
 
 End state: a working agent with its safety controls in place (PII masking, approval on writes),
 plus an automated evaluation service that scores it on demand and on a schedule, and alerts when
@@ -273,28 +273,143 @@ platform and that.
 - [ ] verify: prompt change ships with no `kubectl`; bad prompt blocked + auto-rolled-back;
       token-wasteful prompt blocked by the **cost** gate while passing quality
 
-## Phase 5 — Evaluation Hub (~10h) — NEXT
+## Phase 5 — Evaluation Hub (~9.5h) — NEXT
 
-The scoring logic already exists and has been run: `eval/run_eval.py` (247 lines) plus
-`eval/golden/questions.yaml`, with two result files at the repo root as evidence. What remains
-is **packaging it as a CRD + controller**, not writing it. Validating the logic as a script
-first was deliberate — packaging logic you have not validated is how you end up debugging
-Kubernetes when the problem is a scoring bug.
+**Redesigned 2026-08-25 after checking the design against what the field actually does**
+(Langfuse, LangChain, Arize, Promptfoo all converge on the same shape). Two decisions came
+out of it, both reversals:
 
-**Two golden-set fixes found during Phase 3 verification, do these before generating any
-baseline:**
+**1. NO `EvaluationRun` CRD, NO kopf controller.** The CRD existed to give eval runs a
+control plane. But two control planes already consume the verdict — GitHub Actions for the
+pre-merge gate, Argo Rollouts `AnalysisTemplate` for the promotion gate — so the CRD would
+have been a third whose only consumers are the other two. A controller earns its keep when
+it reconciles ONGOING state; an eval run starts, scores, and exits, and Kubernetes already
+ships the primitive for that. A kopf operator whose whole body is "watch CR → create Job →
+patch status" reimplements `Job` with extra RBAC. Where CRD-driven eval orchestration does
+exist in the wild, it is because Argo Workflows or Kubeflow *already is* the operator.
+Saved ~3.5h. **The interview answer is the rejection, not the artifact** — controller-pattern
+credibility already comes from operating Argo CD, ESO, and Rollouts.
 
-- [ ] `gs-002` points at `ACC-00004`, which has **zero cards**. The agent handled it correctly
-      (said "no cards" rather than inventing any), but as a coverage case it is weak: an empty
-      result makes `groundedness` trivially passable and never tests whether the agent can read
-      card fields. Repoint it at an account that has cards; move the empty case to the `refuse`
-      shape, where it belongs.
-- [ ] The `memory` shape tests **reference resolution** ("that account" → ACC-00004) but not
-      **staleness** — re-asking a question whose answer is already in context, where a lazy
-      agent skips the tool and answers from history (war story #18). These are opposite failure
-      modes: one wants the agent to use context, the other forbids it. Needs its own case, where
-      `expect_tools` being non-empty is the entire assertion. Note the failure looks *better*
-      than the pass — faster, cheaper, right number — until the underlying data changes.
+**2. Scores reach Prometheus via Pushgateway.** Prometheus PULLS every ~30s; an eval Job
+lives ~2 minutes, so it may never be scraped, and the series dies with the pod. Pushgateway
+is a permanent target the Job POSTs to on its way out — the one use case the Prometheus docs
+endorse it for. Know the caveat: it is WRONG for services, because a pushed metric outlives
+its source and "is it up?" becomes unanswerable. Correct for a job that exists to leave a
+result behind.
+
+### The tie-up — one runner, three consumers
+
+```
+eval/golden/questions.yaml   (git = the dataset version)
+            |
+            v
+      run_eval.py            (one runner, same code locally and in-cluster)
+            |
+  +---------+-----------------+--------------------+
+  v         v                 v                    v
+exit code  Pushgateway   Langfuse scores      results JSON
+  |            |               |
+  v            v               v
+GitHub     Prometheus     per-case trend + one click to the trace
+Actions      |     |
+(merge   Rollouts  PrometheusRule
+ gate)   Analysis   (drift alert)
+         (promote
+          gate)
+```
+
+This is the industry three-layer shape: **offline/CI** on PR, **scheduled** sweeps, **online**
+sampling (E2). Nothing here is bespoke.
+
+### Metrics — six, three of them judged, ONE judge call
+
+Renamed 2026-08-25 to the field's names — computation unchanged in all three cases:
+
+| was | now | source |
+|---|---|---|
+| `groundedness` | `faithfulness` | RAGAS / LangChain |
+| `tool_selection` | `tool_correctness` | DeepEval `ToolCorrectnessMetric` |
+| `parameter_accuracy` | `argument_correctness` | DeepEval `ArgumentCorrectnessMetric` |
+
+DeepEval judges argument correctness with an LLM and no reference; this does it as a
+deterministic key-value compare, which is better HERE because the golden set already
+declares the expected arguments — no reason to pay a model to decide `"2026-07-01" ==
+"2026-07-01"`.
+
+| Metric | Type | Catches what nothing else does |
+|---|---|---|
+| `tool_correctness` | code | routing broke |
+| `argument_correctness` | code | argument extraction broke |
+| `faithfulness` | judge | fabrication on top of correct data |
+| `answer_relevance` | judge | **NEW** — every number right, wrong question answered |
+| `answer_correctness` | judge, 3 cases | **NEW** — true but INCOMPLETE |
+| `cost_per_request` + `latency_p95` | code | run-level budgets; quality flat, spend up |
+
+The three judged metrics share ONE API call — three calls would triple judge spend and let
+the judge contradict itself on the same answer.
+
+**`answer_correctness` was challenged and survived, but narrowed 6 cases → 3.** The
+objection is fair: faithfulness + relevance already cover most of it. Checked case by
+case, 5 of the original 6 references were redundant — fabricated balances, invented cards,
+and quoted exchange rates are all unsupported claims that faithfulness catches, and
+inventing an unnamed account is caught by `tool_correctness` (expected `[]`). Even the
+"wrong verdict from correct figures" case is caught, because RAGAS faithfulness scores
+INFERENCE, not quoting: *"the account has exceeded its limit"* cannot be inferred from a
++185k balance against a 7,126.26 limit.
+
+**The one gap faithfulness structurally cannot close is OMISSION.** It scores the claims
+that are IN the answer and has no opinion about claims that should have been there and are
+not. An answer listing 2 of a customer's 5 accounts is 100% faithful and 100% wrong, and
+no judge prompt fixes it — the missing content isn't there to judge. That is why RAGAS
+defines answer_correctness as *coverage* against a reference.
+
+Surviving references: **gs-016** (a balance per account), **gs-004** (every category), and
+**gs-008** (a two-part question where answering one half is the likely failure).
+
+**Each reference states what must be COVERED, never what the values are** — which also
+kills the maintenance objection. `"a balance for every account list_accounts returned"`
+survives a reseed; `"8,200 AED on groceries"` does not. Writing a number into
+`expect_answer` is a signal that faithfulness already has the case.
+
+**Per-metric thresholds, not one number** (`THRESHOLDS` in `run_eval.py`). Code metrics are
+exact comparisons so the floor is 1.0; judged metrics are opinions and a 0.9 from a judge is
+a pass, not a near-miss. One global 0.99 would fail the suite on judge noise instead of on
+agent regressions, and a gate that cries wolf gets switched off inside a week.
+
+### Done 2026-08-25
+
+- [x] `run_eval.py` rewritten — 6 metrics, one judge call, per-metric `THRESHOLDS`,
+      run-level cost/latency budgets, Pushgateway push (env-gated, inert locally)
+- [x] Golden set 12 → **18 cases**, shapes single 9 / refuse 4 / memory 3 / multi 2
+- [x] `gs-002` fixed — moved `single` → `refuse`. ACC-00004 has zero cards, so it was never
+      testing card fields; as a refuse case it guards inventing a card. gs-015 does the real
+      card test.
+- [x] **Tool-coverage hole found and closed:** `get_customer`, `find_transactions`, and
+      `get_cards`-with-data had NO case at all — a regression in any of them would have
+      shipped green. Now 8 of 9 tools covered.
+- [x] `gs-018` added — "what's my balance?" with no account named anywhere. Guards the
+      nastiest failure available: inventing a plausible account ID and answering
+      confidently about someone else's money.
+- [x] Staleness case was **already covered** by gs-010 — the earlier note claiming otherwise
+      was stale.
+- [x] `eval/golden/README-placeholders.sql` — resolves the two values only the DB knows
+
+### Open
+
+- [ ] Run `README-placeholders.sql`, fill `SEARCH_TERM` (gs-014) and `ACC-WITH-CARDS` (gs-015)
+- [ ] **Judge calibration** — hand-label the 18 cases once, measure agreement with Haiku,
+      record the number in the README. Everyone says "I use LLM-as-a-judge"; almost nobody can
+      answer *"how do you know your judge is right?"*, and it is the standard follow-up. Also
+      settles the open question of whether Haiku grades `refuse` noisily, with data.
+- [ ] Runner image — same `run_eval.py`, no fork
+- [ ] `Job` + `CronJob` manifests in `charts/nova` (**not** a self-deleting Job — see 4a)
+- [ ] Pushgateway: `prometheus-pushgateway.enabled: true` on kube-prometheus-stack
+- [ ] Langfuse `create_score(trace_id=...)` so a regression is one click from the conversation
+- [ ] GitHub Actions offline workflow — PR touching `nova/` or `eval/` runs the suite
+- [ ] PrometheusRule on `nova_eval_score` thresholds (absorbs old Phase 5.5)
+- [ ] Empty regression set scaffolded
+- [ ] verify: `kubectl create job --from=cronjob/nova-eval` → 6 scores in the log, same in
+      Prometheus, same in Langfuse, exit code non-zero on a seeded failure
 
 - [x] **Decided 2026-08-24: the judge stays `claude-haiku-4-5`.** Sonnet is 3x Haiku on both
       input and output (`eval/run_eval.py` `RATES`), and the baseline gets regenerated often
@@ -304,20 +419,12 @@ baseline:**
       Set at `charts/nova/templates/nova.yaml:47` — the chart, not `k8s/`, since Phase 4a.
       **Reconcile the docs:** README and IMPLEMENTATION-PLAN still say Sonnet.
 
-- [ ] Generate ~30 candidate questions from tool schemas; curate to ~18
-- [ ] Tag `expect_tools` + `expect_params`; SQL-computed answers where a literal is wanted
-- [ ] Empty regression set scaffolded
-- [ ] `EvaluationRun` CRD + RBAC
-- [ ] kopf controller — watch CRs → spawn Job → patch status
-- [ ] Runner image — replay, score **four** metrics, write Postgres
-- [ ] `/metrics` endpoint scraped by Prometheus
-- [ ] verify: `kubectl apply` an EvaluationRun → Job runs → CR status shows four scores → same in Prometheus
+## Phase 5.5 — absorbed into Phase 5 (was ~2h)
 
-## Phase 5.5 — Drift Tier 1, scheduled replay (~2h)
-
-- [ ] CronJob creating a scheduled `EvaluationRun` against production
-- [ ] PrometheusRule alerting on score thresholds
-- [ ] verify: a scheduled run appears with no human action; degrade a threshold, alert fires
+The CronJob and the PrometheusRule are two checkboxes above, not a phase. Once the runner
+pushes to Pushgateway, "scheduled replay" is a `CronJob` wrapping the same image and
+"alert on drift" is a `PrometheusRule` over `nova_eval_score` — neither needs its own build
+step. Live-traffic scoring stays out; that is E2 and it is genuinely different work.
 
 ---
 
@@ -325,7 +432,8 @@ baseline:**
 
 ## E2 — Drift Tier 2, live-traffic scoring (~4h)
 
-- [ ] Sample production traces, score `groundedness` (reference-free)
+- [ ] Sample production traces, score `faithfulness` + `answer_relevance`
+      (both reference-free — that is exactly why live traffic can be scored at all)
 - [ ] Track score distribution over time
 - [ ] Promote failures into the regression set
 - [ ] verify: a question shape absent from the golden set appears in sampled scores and lands
@@ -339,7 +447,7 @@ baseline:**
 - [ ] In-cluster training Job (PyTorch / HF Transformers)
 - [ ] MLflow + Postgres backend + GCS artifacts (registry + experiment tracking)
 - [ ] Nova routes via classifier above a confidence threshold, falls back to Claude
-- [ ] verify: promotes only if `tool_selection` ≥ Claude baseline; record cost-per-request delta
+- [ ] verify: promotes only if `tool_correctness` ≥ Claude baseline; record cost-per-request delta
 
 ## E4 — Hardening (~5h)
 
@@ -349,6 +457,10 @@ baseline:**
 
 ## Notes
 
+- **Metrics:** six — `tool_correctness`, `argument_correctness`, `faithfulness`,
+  `answer_relevance`, `answer_correctness` (conditional), `cost_per_request`, plus a
+  run-level `latency_p95`. `groundedness` was renamed to `faithfulness` on 2026-08-25;
+  the computation never changed.
 - **Models:** `claude-haiku-4-5` for the agent, `claude-haiku-4-5` for the LLM judge (decided 2026-08-24 — cost; revisit if grading proves noisy). Pin the
   judge — an upgrade changes scores with no change to the agent.
 - **Secrets — accepted tradeoff.** Terraform generates the Postgres password with
@@ -370,5 +482,6 @@ baseline:**
 - **Budget:** no GPU. ~$0.29–0.38/hr node time + ~$0.17/eval run. $10 ceiling.
 - **GCP project stays `mlops-lifecycle-p7-gke`** — project IDs are immutable; the repo rename
   doesn't touch it. Same for the HCP workspace `mlops-model-lifecycle-gcp`.
-- **Total:** ~63h work, ~79h elapsed with the command round-trip workflow. Core build alone is
-  ~35h and is a demonstrable milestone on its own.
+- **Total:** ~62.5h work. Core build alone is ~45.5h and is a demonstrable milestone on
+  its own — 29h of it is done (64%), leaving ~16.5h: Phase 2.5 (2h), Phase 4b (5h),
+  Phase 5 (9.5h).

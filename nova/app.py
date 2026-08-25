@@ -258,7 +258,7 @@ async def chat(req: ChatRequest):
     """One customer turn.
 
     Returns the tool calls and token usage alongside the answer. The evaluation in
-    Phase 4 scores tool_selection and parameter_accuracy directly from this
+    Phase 4 scores tool_correctness and argument_correctness directly from this
     response, so it has to expose what the agent *did*, not only what it said.
     """
     trace_id = str(uuid.uuid4())
@@ -286,8 +286,8 @@ async def chat(req: ChatRequest):
     #
     # Without this, result["messages"] returns the whole conversation from the
     # checkpointer, and reporting all of it means tool_calls accumulates across turns
-    # (1, 2, 3, 4 ...) and usage sums every past call. Phase 4 scores tool_selection
-    # and parameter_accuracy from exactly this field, so the bug would fail every
+    # (1, 2, 3, 4 ...) and usage sums every past call. Phase 4 scores tool_correctness
+    # and argument_correctness from exactly this field, so the bug would fail every
     # multi-turn eval case against a correctly-behaving agent.
     prior_len = 0
     try:

@@ -2,7 +2,7 @@
 
 The smallest server, and deliberately so: it exists to make routing a real decision.
 With only accounts and transactions, tool selection is close to a coin flip the model
-can't get wrong. A third domain means `tool_selection` measures something.
+can't get wrong. A third domain means `tool_correctness` measures something.
 """
 
 import os
