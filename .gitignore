@@ -27,3 +27,5 @@ docs/DEBUGGING.md
 docs/P7-TROUBLESHOOTING.md
 status.md
 *.json
+
+#SQL related files ie- .sql files

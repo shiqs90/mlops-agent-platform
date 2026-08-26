@@ -164,8 +164,26 @@ to compare against. `answer_correctness` cannot go there, by construction.
 | Grows | Deliberately, with new capability | Automatically, from every bug found |
 | Source | Generated from tool schemas, curated by hand | Failed drift runs and incident postmortems |
 
-Neither is hand-authored as question/answer pairs. Where a literal answer is needed it is
-**computed by SQL against the same seed data** — machine-generated and provably correct.
+Neither is hand-authored as question/answer pairs, and **no case asserts a balance.** A
+banking agent reads mutable data, so a stored *"the balance is 185,254.95"* would measure
+how recently someone refreshed the fixture, not how well the agent works. Cases assert
+structure — right tool, right arguments, every returned row covered — while the judged
+metrics score against what the tool returned on that run.
+
+`expect_answer` is on **3 of 18 cases**. It started on 6; each was checked against *"would
+faithfulness catch this anyway?"* and 5 failed that test — fabricated balances, invented
+cards, and quoted exchange rates are all unsupported claims, and inventing an unnamed
+account is caught by `tool_correctness` expecting `[]`. Even a wrong verdict built from
+real figures is caught, because faithfulness scores **inference**, not quoting.
+
+The survivors describe **what must be covered**, never what the values are — *"a balance
+for every account `list_accounts` returned"*. Coverage references survive a reseed; value
+references don't. A number in `expect_answer` is a signal that faithfulness already has
+the case.
+
+One coupling to know about: `gs-002` is a `refuse` case premised on `ACC-00004` having no
+cards. A reseed that gives it one breaks the case silently — re-check with
+`eval/golden/README-placeholders.sql`.
 
 ## Cost
 
@@ -175,7 +193,7 @@ No GPU at any point.
 |---|---|
 | GKE node pool | ~$0.29–0.38/hr — **scale to zero between sessions** |
 | GKE control plane | Free tier (zonal cluster) |
-| Claude API per 18-question eval run | ~$0.02 (`haiku-4-5` agent + `haiku-4-5` judge, one judge call per case) |
+| Claude API per 18-question eval run | ~$0.15 — `haiku-4-5` agent ~$0.11 (21 turns; 3 cases have a `setup`) + `haiku-4-5` judge ~$0.05 (one call per case) |
 | Drift monitoring | ~$5/month nightly, ~$1.20/month weekly |
 
 ```bash

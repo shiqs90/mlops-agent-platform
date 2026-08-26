@@ -1,53 +1,22 @@
-# Golden set — coverage. Does Nova handle the shapes of question it should?
+# Golden set — 18 cases, 8 of 9 tools. Design rationale lives in README.md
+# ("The golden set"); this file is the fixture.
 #
-# NOT hand-authored Q&A pairs. Each case carries the question plus a one-line
-# annotation of what SHOULD happen. Two of the six metrics are string comparisons
-# against these annotations; faithfulness and answer_relevance need no annotation at
-# all — they are judged against what the tool actually returned and against the
-# question itself.
+# Fields: question, expect_tools, expect_params, optional setup (prior turn),
+#         optional expect_answer (COVERAGE only, never a value — 3 cases).
 #
-# Four shapes are deliberately covered:
-#   single    — one tool, the base case
-#   multi     — two tools in one turn, tests sequencing
-#   memory    — reference resolution across turns ("that account", "and June?")
-#   refuse    — should NOT invent an answer when the data isn't there
+# Shapes: single | multi | memory | refuse
 #
-# `expect_answer` is OPTIONAL and deliberately rare — 3 of 18 cases.
+# Structural facts the cases depend on — no balances, nothing here is asserted:
+#   ACC-00004  current, HAS an overdraft limit, ZERO cards   (gs-008, gs-002)
+#   ACC-00002  1 ACTIVE CREDIT card, so credit_limit is non-NULL   (gs-015)
+#   ACC-00004  7 transactions with counterparty "Talabat"          (gs-014)
+#   ACC-00003  savings, no overdraft, exactly 1 card
+#   ACC-00001  savings, no overdraft, ZERO cards
 #
-#   It was on 6 cases when first written. Each was then checked against the question
-#   "would faithfulness catch this failure anyway?", and 5 of the 6 failed that test:
+# After any reseed, re-check with README-placeholders.sql: gs-002 assumes ACC-00004
+# still has no cards, and a reseed that gives it one breaks the case silently.
 #
-#     fabricated balance on a missing account -> faithfulness (unsupported claim)
-#     invented card on an account with none   -> faithfulness
-#     exchange rate quoted with no tool call  -> faithfulness (no context at all)
-#     inventing an account nobody named       -> tool_correctness (expected [])
-#     a wrong verdict built from real figures -> faithfulness, because faithfulness
-#                                                scores INFERENCE, not quoting: "the
-#                                                account has exceeded its limit" cannot
-#                                                be inferred from balance +185k against
-#                                                a 7,126.26 limit
-#
-#   THE ONE GAP FAITHFULNESS CANNOT CLOSE IS OMISSION. It scores the claims that are
-#   IN the answer; it has no opinion about claims that should have been there and are
-#   not. An answer listing 2 of a customer's 5 accounts is 100% faithful and 100%
-#   wrong, and no judge prompt fixes that — the missing content isn't there to judge.
-#
-#   So every surviving reference describes WHAT MUST BE COVERED, never what the values
-#   are. That is deliberate: a reference naming "every category the tool returned"
-#   survives a reseed, while "8,200 AED on groceries" is wrong the next time db/seed.py
-#   runs. Coverage references do not rot; value references do. If you ever find
-#   yourself writing a number into expect_answer, faithfulness probably already has it.
-#
-# TOOL COVERAGE — 8 of 9 tools. The ninth is initiate_transfer, the only write tool,
-# deliberately absent until Phase 2.5 lands the human-approval middleware. Adding it
-# now would assert behaviour that does not exist yet, and a suite that fails by design
-# is a gate nobody trusts. When 2.5 ships, the case to add is a `refuse` shape: a
-# transfer request must HALT for approval, not execute.
-#
-# Account facts these are pinned to (seed ING-20260801-42, ANCHOR_DATE 2026-08-01):
-#   ACC-00004  current, balance 185254.95, overdraft 7126.26, ZERO cards
-#   ACC-00003  savings, negative-balance case is now impossible post-fix
-#   ACC-00001  savings, balance 183732.46
+# initiate_transfer has no case until Phase 2.5 lands human approval.
 
 - id: gs-001
   shape: single
@@ -178,21 +147,29 @@
   # argument — so it is the only place argument_correctness tests EXTRACTION rather than
   # formatting. The agent has to lift the search term out of the sentence unchanged.
   #
-  # PLACEHOLDER: SEARCH_TERM must be a description that really occurs on ACC-00004.
-  # See eval/golden/README-placeholders.sql — run it before the first scored run.
-  question: "Find any transactions on ACC-00004 mentioning SEARCH_TERM."
+  # Resolved 2026-08-25 to "Talabat" — a COUNTERPARTY with 7 matching rows on
+  # ACC-00004, not a description. That matches what the tool is documented for ("did I
+  # pay DEWA", "find my Carrefour charges") and makes the case a proper-noun extraction
+  # test. "Salary" was rejected: it collides with gs-005, so a routing regression there
+  # would surface as two failures with one cause.
+  #
+  # WATCH THIS ONE. argument_correctness compares strings exactly, while the tool
+  # matches with ILIKE. If the agent passes "talabat", the tool behaves identically and
+  # the metric still scores 0. That would be a metric artefact, not an agent defect —
+  # if it happens, case-fold this field rather than "fixing" the agent.
+  question: "Find any transactions on ACC-00004 involving Talabat."
   expect_tools: [find_transactions]
-  expect_params: {account_id: ACC-00004, search_term: SEARCH_TERM}
+  expect_params: {account_id: ACC-00004, search_term: Talabat}
 
 - id: gs-015
   shape: single
-  # The card case gs-002 was supposed to be. Needs an account that HAS cards, so that
-  # the agent must read card fields rather than report an empty list.
-  #
-  # PLACEHOLDER: ACC-WITH-CARDS. See eval/golden/README-placeholders.sql.
-  question: "Which cards are linked to account ACC-WITH-CARDS?"
+  # The card case gs-002 was supposed to be. ACC-00002 holds an active CREDIT card, so
+  # the answer has real fields to get wrong — credit_limit is NULL on debit cards, and
+  # `status` is exactly the field an agent drops ("you have a card" and "you have a card
+  # that works" are different claims).
+  question: "Which cards are linked to account ACC-00002?"
   expect_tools: [get_cards]
-  expect_params: {account_id: ACC-WITH-CARDS}
+  expect_params: {account_id: ACC-00002}
 
 - id: gs-016
   shape: multi
