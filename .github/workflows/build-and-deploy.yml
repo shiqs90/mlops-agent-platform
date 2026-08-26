@@ -21,9 +21,9 @@ on:
     inputs:
       images:
         description: 'Force a rebuild regardless of what changed: nova, mcp-servers, or both'
-        default: both
+        default: nova
         type: choice
-        options: [both, nova, mcp-servers]
+        options: [nova, mcp-servers, both]
 
 env:
   PROJECT_ID: mlops-lifecycle-p7-gke
