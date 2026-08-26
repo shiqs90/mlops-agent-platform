@@ -117,11 +117,31 @@ jobs:
       # the `exec format error` that cost a debugging session (war story #8). The runner
       # is amd64 too, so this is belt-and-braces here — but it keeps CI and the laptop
       # on the identical build path, which is the property that matters.
+      #
+      # --suppress-logs is REQUIRED here, not a preference. Cloud Build writes to a
+      # Google-managed default logs bucket, and streaming from it needs project-wide
+      # roles/viewer — as the error says outright: "This tool can only stream logs if
+      # you are Viewer/Owner of the project". roles/logging.viewer does NOT satisfy it.
+      # Without this flag the build succeeds, the image is pushed, and gcloud still
+      # exits 1 because it could not tail the output. The job then dies BEFORE the tag
+      # is committed, so an image exists that nothing deploys — a green build reported
+      # as a red pipeline.
+      #
+      # What this costs: no streamed build output in the Actions log. What it does NOT
+      # cost: the failure signal. gcloud still WAITS for the build and exits non-zero
+      # if the build itself fails (unlike --async, which returns immediately and would
+      # let a broken image sail through to the tag bump). The console URL is printed
+      # above this step for anyone debugging with their own credentials.
+      #
+      # The alternative worth knowing: --gcs-log-dir pointed at a bucket we own, which
+      # restores streaming without granting CI project-wide read. Not worth a bucket
+      # and a binding yet.
       - name: Build and push
         run: |
           gcloud builds submit ${{ matrix.dir }}/ \
             --tag "${REGISTRY}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}" \
-            --project "${PROJECT_ID}"
+            --project "${PROJECT_ID}" \
+            --suppress-logs
 
       - name: Bump the chart and push
         run: |
