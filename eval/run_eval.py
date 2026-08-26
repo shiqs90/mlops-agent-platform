@@ -139,6 +139,11 @@ to a different question scores high on faithfulness and low here. Penalise evasi
 padding, and answering a narrower or broader question than the one asked. Do NOT
 penalise an answer for being short if the question was narrow.
 
+When a question CANNOT be answered as asked — it is out of scope, the data does not
+exist, or it is missing something required like an account number — then declining, or
+asking for the missing detail, IS the maximally relevant response. Score it 1.0. Do not
+mark it down for failing to supply an answer that would have had to be invented.
+
 ANSWER_CORRECTNESS — does the answer COVER everything the reference says it must?
 This metric exists for omission, so weight coverage heavily: score down every required
 item the reference names that the answer leaves out, even if everything present is
@@ -374,6 +379,8 @@ def main() -> None:
 
             row = {
                 "run_id": run_id, "question_id": case["id"], "shape": case.get("shape"),
+                # Carried so a result file reads on its own, without opening the fixture.
+                "question": case["question"], "answer": resp.get("answer", ""),
                 "tool_correctness": ts, "argument_correctness": ps,
                 "faithfulness": judged["faithfulness"],
                 "answer_relevance": judged["answer_relevance"],
@@ -436,6 +443,8 @@ def main() -> None:
         for r in failures:
             print(f"  {r['question_id']}  failed={','.join(r['failed_metrics'])}  "
                   f"tools={r['tools_called']}  trace_id={r['trace_id']}")
+            print(f'      q: "{r["question"]}"')
+            print(f'      a: "{r["answer"][:160]}"')
             if r["unsupported"]:
                 print(f"      unsupported: {r['unsupported']}")
     for b in budget_breaches:

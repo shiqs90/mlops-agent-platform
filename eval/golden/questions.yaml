@@ -7,14 +7,15 @@
 # Shapes: single | multi | memory | refuse
 #
 # Structural facts the cases depend on — no balances, nothing here is asserted:
-#   ACC-00004  current, HAS an overdraft limit, ZERO cards   (gs-008, gs-002)
-#   ACC-00002  1 ACTIVE CREDIT card, so credit_limit is non-NULL   (gs-015)
-#   ACC-00004  7 transactions with counterparty "Talabat"          (gs-014)
-#   ACC-00003  savings, no overdraft, exactly 1 card
-#   ACC-00001  savings, no overdraft, ZERO cards
+#   ACC-00004  current, HAS an overdraft limit, ZERO cards   (gs-002, gs-008)
+#   ACC-00004  7 transactions with counterparty "Talabat"    (gs-014)
+#   ACC-00002  1 ACTIVE CREDIT card, credit_limit non-NULL   (gs-015)
+#   CUS-00034  5 accounts, 1 loan     (gs-006, gs-007, gs-013, gs-016)
 #
-# After any reseed, re-check with README-placeholders.sql: gs-002 assumes ACC-00004
-# still has no cards, and a reseed that gives it one breaks the case silently.
+# Re-check these after any reseed with README-placeholders.sql — a case whose data went
+# empty keeps PASSING, it does not fail. All four customer cases were pinned to
+# CUS-00012 until 2026-08-26, when it turned out to have 0 accounts and 0 loans: three
+# of them had been scoring 1.00 against empty tool results.
 #
 # initiate_transfer has no case until Phase 2.5 lands human approval.
 
@@ -63,15 +64,15 @@
 
 - id: gs-006
   shape: single
-  question: "What loans does customer CUS-00012 have?"
+  question: "What loans does customer CUS-00034 have?"
   expect_tools: [get_loans]
-  expect_params: {customer_id: CUS-00012}
+  expect_params: {customer_id: CUS-00034}
 
 - id: gs-007
   shape: single
-  question: "List every account belonging to customer CUS-00012."
+  question: "List every account belonging to customer CUS-00034."
   expect_tools: [list_accounts]
-  expect_params: {customer_id: CUS-00012}
+  expect_params: {customer_id: CUS-00034}
 
 - id: gs-008
   shape: multi
@@ -137,9 +138,9 @@
   shape: single
   # get_customer had zero coverage. Also the first case whose tool returns PII, which
   # makes it the natural place to assert Phase 2.5's masking once that lands.
-  question: "Who is customer CUS-00012?"
+  question: "Who is customer CUS-00034?"
   expect_tools: [get_customer]
-  expect_params: {customer_id: CUS-00012}
+  expect_params: {customer_id: CUS-00034}
 
 - id: gs-014
   shape: single
@@ -172,14 +173,17 @@
   expect_params: {account_id: ACC-00002}
 
 - id: gs-016
-  shape: multi
+  shape: single
   # Fan-out rather than sequencing: one lookup, then the same tool per result. Tests
   # that the agent does not stop after the first account. tool_correctness scores this
   # as a set, so repeated check_balance calls count once — what this really guards is
   # faithfulness, which fails if the agent summarises accounts it never queried.
-  question: "List CUS-00012's accounts and tell me the balance on each."
-  expect_tools: [list_accounts, check_balance]
-  expect_params: {customer_id: CUS-00012}
+  # ONE tool, not two: list_accounts already returns balance per row, so calling
+  # check_balance five more times would re-fetch what it has — the exact waste
+  # tool_correctness penalises. Expecting both marked a correct agent down.
+  question: "List CUS-00034's accounts and tell me the balance on each."
+  expect_tools: [list_accounts]
+  expect_params: {customer_id: CUS-00034}
   expect_answer: >-
     A balance must be given for EVERY account that list_accounts returned. Covering a
     subset, or giving a combined total instead of per-account figures, is incomplete —

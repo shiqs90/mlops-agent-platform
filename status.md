@@ -404,12 +404,27 @@ agent regressions, and a gate that cries wolf gets switched off inside a week.
 - [ ] Runner image — same `run_eval.py`, no fork
 - [ ] `Job` + `CronJob` manifests in `charts/nova` (**not** a self-deleting Job — see 4a)
 - [ ] Pushgateway: `prometheus-pushgateway.enabled: true` on kube-prometheus-stack
-- [ ] Langfuse `create_score(trace_id=...)` so a regression is one click from the conversation
 - [ ] GitHub Actions offline workflow — PR touching `nova/` or `eval/` runs the suite
 - [ ] PrometheusRule on `nova_eval_score` thresholds (absorbs old Phase 5.5)
 - [ ] Empty regression set scaffolded
 - [ ] verify: `kubectl create job --from=cronjob/nova-eval` → 6 scores in the log, same in
-      Prometheus, same in Langfuse, exit code non-zero on a seeded failure
+      Prometheus, exit code non-zero on a seeded failure
+
+### Phase 5.6 — Langfuse dataset runs (~1h) — AFTER Phase 5 is signed off
+
+Deferred deliberately: finish the scoring and the gate first, then add the trend view.
+
+Langfuse Datasets + dataset runs are the industry-standard answer to "is the system improving
+or degrading" — the same shape as LangSmith Experiments and Braintrust Experiments. Not a
+custom results store; nobody hand-rolls one.
+
+- [ ] Push the 18 golden cases as a Langfuse Dataset (idempotent, safe to re-run)
+- [ ] Each eval run becomes a dataset run; scores attach per item
+- [ ] verify: compare view with a baseline shows per-item green/red deltas on score, cost and
+      latency; the Charts tab plots average score across runs
+
+What this replaces: comparing runs by hand with `json.load` on files in the repo root, which is
+how the 17 Aug vs 26 Aug faithfulness regression was actually diagnosed.
 
 - [x] **Decided 2026-08-24: the judge stays `claude-haiku-4-5`.** Sonnet is 3x Haiku on both
       input and output (`eval/run_eval.py` `RATES`), and the baseline gets regenerated often
