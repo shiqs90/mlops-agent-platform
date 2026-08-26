@@ -1,14 +1,8 @@
-# Build changed images, then commit the new tag to the chart. That commit IS the deploy:
-# Argo CD reads git, notices values.yaml moved, and rolls the pods. Nothing here talks to
-# the Kubernetes API, and that is the point — CI has no cluster credential at all.
+# Build changed images, commit the new tag to charts/nova/values.yaml. That commit IS the
+# deploy — Argo CD sees it and rolls the pods. CI never touches the Kubernetes API.
 #
-#   push to nova/**        -> build nova        -> bump images.nova.tag -> Argo CD syncs
-#   push to mcp-servers/** -> build mcp-servers -> bump images.mcp.tag  -> Argo CD syncs
-#
-# WHY THIS DOES NOT LOOP: the triggers watch nova/** and mcp-servers/** only. The commit
-# this workflow makes touches charts/nova/values.yaml, which matches no trigger path. No
-# `[skip ci]` marker needed — the path filter is the guard, and it cannot be forgotten
-# the way a commit-message convention can.
+# No loop: triggers watch nova/** and mcp-servers/**; the bot commit touches
+# charts/nova/values.yaml, which matches neither.
 name: build-and-deploy
 
 on:
@@ -20,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       images:
-        description: 'Force a rebuild regardless of what changed: nova, mcp-servers, or both'
+        description: 'Force a rebuild: nova, mcp-servers, or both'
         default: nova
         type: choice
         options: [nova, mcp-servers, both]
@@ -29,16 +23,12 @@ env:
   PROJECT_ID: mlops-lifecycle-p7-gke
   REGISTRY: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle
 
-# One deploy at a time. Two runs racing would both rebase onto main and push
-# values.yaml, and the loser would silently deploy a tag the winner had replaced.
+# Two runs would both rebase and push values.yaml; the loser deploys a stale tag.
 concurrency:
   group: build-and-deploy
   cancel-in-progress: false
 
 jobs:
-  # Decide what to build BEFORE building anything. Done with git rather than a
-  # marketplace path-filter action: this is four lines of shell, and a third-party
-  # action in the deploy path is a supply-chain dependency for no gain.
   changed:
     runs-on: ubuntu-latest
     outputs:
@@ -47,9 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Need the previous commit to diff against. Default checkout is depth 1,
-          # which makes `git diff HEAD^` fail with an unhelpful "bad revision".
-          fetch-depth: 2
+          fetch-depth: 2      # need HEAD^ to diff against; default depth 1 breaks it
 
       - id: detect
         run: |
@@ -67,8 +55,7 @@ jobs:
             echo "$files" | grep -q '^mcp-servers/' && dirs="$dirs mcp-servers" || true
           fi
 
-          # Map each directory to the values.yaml key it controls. These differ
-          # (mcp-servers/ -> images.mcp) so the mapping has to be explicit.
+          # Directory name != values.yaml key (mcp-servers -> images.mcp), so map explicitly.
           entries=""
           for d in $dirs; do
             case "$d" in
@@ -76,9 +63,8 @@ jobs:
               mcp-servers) entries="$entries {\"dir\":\"mcp-servers\",\"key\":\"mcp\",\"image\":\"mcp-servers\"}," ;;
             esac
           done
-          matrix="{\"include\":[${entries%,}]}"
 
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":[${entries%,}]}" >> "$GITHUB_OUTPUT"
           echo "any=$([ -n "$dirs" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "building:${dirs:- nothing}"
 
@@ -87,19 +73,14 @@ jobs:
     if: needs.changed.outputs.any == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write        # push the tag bump back to main
+      contents: write
     strategy:
       matrix: ${{ fromJson(needs.changed.outputs.matrix) }}
-      # Serial, not parallel. Both jobs push to main; running them together means one
-      # rebases onto the other mid-flight. Two images take ~6 minutes serially and this
-      # is a deploy pipeline, not a test suite — predictability beats speed.
-      max-parallel: 1
+      max-parallel: 1     # both jobs push to main; parallel means one rebases mid-flight
     steps:
       - uses: actions/checkout@v4
 
-      # Long-lived SA key, by decision on 2026-08-25. See terraform-gcp/cicd.tf for the
-      # tradeoff and the WIF migration path — swapping this for keyless auth is a
-      # two-line change here.
+      # Long-lived SA key by decision 2026-08-25; see terraform-gcp/cicd.tf for the WIF path.
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
@@ -107,69 +88,39 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - id: tag
-        # Date for humans reading `git log`, short SHA so any running pod can be traced
-        # to the exact commit that produced it. The existing hand-built tags carried a
-        # note instead ("-nocache", "-lock"); a SHA is the same length and never lies.
+        # Date for humans, short SHA so a running pod traces back to the exact commit.
         run: echo "tag=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      # Cloud Build, not docker build in the runner. It builds natively on amd64, which
-      # is what GKE nodes are; cross-building for them from a different architecture is
-      # the `exec format error` that cost a debugging session (war story #8). The runner
-      # is amd64 too, so this is belt-and-braces here — but it keeps CI and the laptop
-      # on the identical build path, which is the property that matters.
-      #
-      # --suppress-logs is REQUIRED here, not a preference. Cloud Build writes to a
-      # Google-managed default logs bucket, and streaming from it needs project-wide
-      # roles/viewer — as the error says outright: "This tool can only stream logs if
-      # you are Viewer/Owner of the project". roles/logging.viewer does NOT satisfy it.
-      # Without this flag the build succeeds, the image is pushed, and gcloud still
-      # exits 1 because it could not tail the output. The job then dies BEFORE the tag
-      # is committed, so an image exists that nothing deploys — a green build reported
-      # as a red pipeline.
-      #
-      # What this costs: no streamed build output in the Actions log. What it does NOT
-      # cost: the failure signal. gcloud still WAITS for the build and exits non-zero
-      # if the build itself fails (unlike --async, which returns immediately and would
-      # let a broken image sail through to the tag bump). The console URL is printed
-      # above this step for anyone debugging with their own credentials.
-      #
-      # The alternative worth knowing: --gcs-log-dir pointed at a bucket we own, which
-      # restores streaming without granting CI project-wide read. Not worth a bucket
-      # and a binding yet.
+      # Needs roles/viewer on the SA — gcloud refuses to stream Cloud Build's default
+      # logs bucket otherwise, and exits 1 on a build that actually succeeded.
       - name: Build and push
         run: |
           gcloud builds submit ${{ matrix.dir }}/ \
             --tag "${REGISTRY}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}" \
-            --project "${PROJECT_ID}" \
-            --suppress-logs
+            --project "${PROJECT_ID}"
 
       - name: Bump the chart and push
         run: |
           set -euo pipefail
-          yq -i '.images.${{ matrix.key }}.tag = "${{ steps.tag.outputs.tag }}"' \
-            charts/nova/values.yaml
+          yq -i '.images.${{ matrix.key }}.tag = "${{ steps.tag.outputs.tag }}"' charts/nova/values.yaml
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add charts/nova/values.yaml
           git commit -m "deploy(${{ matrix.image }}): ${{ steps.tag.outputs.tag }}"
 
-          # Rebase before pushing: main may have moved while Cloud Build ran. Without
-          # this the push is rejected and the image is built but never deployed — the
-          # worst failure mode, because the job goes red AFTER the expensive step.
+          # main may have moved while the build ran; without this the push is rejected
+          # after the expensive step and the image never deploys.
           git pull --rebase origin main
           git push origin HEAD:main
 
       - name: Summary
         run: |
           {
-            echo "### Deployed \`${{ matrix.image }}\`"
+            echo "### Deployed \`${{ matrix.image }}\` → \`${{ steps.tag.outputs.tag }}\`"
             echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| tag | \`${{ steps.tag.outputs.tag }}\` |"
-            echo "| values key | \`images.${{ matrix.key }}.tag\` |"
-            echo "| applied by | Argo CD, within ~3 min of the commit above |"
-            echo ""
-            echo "Verify: \`kubectl -n nova rollout status deploy/${{ matrix.image }}\`"
+            echo "Argo CD applies within ~3 min. Verify:"
+            echo '```'
+            echo "kubectl -n nova rollout status deploy/${{ matrix.image }}"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
