@@ -264,7 +264,18 @@ lives outside the pod. On the in-process fallback, turn 2 would miss its history
 landed on the other replica. `nova_memory_persistent` is the gauge standing between the
 platform and that.
 
-### 4b — Progressive delivery + CI (~5h) — OPEN
+### 4b — Progressive delivery + CI (~5h) — CI DONE 2026-08-26, rollouts OPEN
+
+- [x] `.github/workflows/build-and-deploy.yml` — path-filtered matrix builds `nova` and
+      `mcp-servers` via Cloud Build, `yq`-bumps the tag in `charts/nova/values.yaml`,
+      commits. **CI holds no Kubernetes credential**; the commit is the deploy.
+- [x] `terraform-gcp/cicd.tf` — `gha-cicd` SA and roles. Key minted out-of-band, NOT by
+      Terraform (`google_service_account_key` would put it in HCP state in plaintext).
+      Long-lived key is an accepted tradeoff; WIF migration path documented in the file.
+- [x] verify: **full loop proven** — workflow built nova, committed the tag, Argo CD rolled
+      the pods, no `kubectl`. Fixed the `tool_results` gap that broke faithfulness.
+- [x] War stories #21–23 recorded (deployed-image drift, bucket-vs-object IAM, green build
+      reported red)
 
 - [ ] Argo Rollouts blue-green; **set `scaleDownDelaySeconds` to several minutes**
 - [ ] `prePromotionAnalysis` — quality **and** cost via Prometheus provider
@@ -392,7 +403,30 @@ agent regressions, and a gate that cries wolf gets switched off inside a week.
       confidently about someone else's money.
 - [x] Staleness case was **already covered** by gs-010 — the earlier note claiming otherwise
       was stale.
-- [x] `eval/golden/README-placeholders.sql` — resolves the two values only the DB knows
+- [x] `eval/golden/README-placeholders.sql` — resolves the values only the DB knows
+- [x] **Placeholders resolved 2026-08-26** — `gs-014` search term `Talabat` (counterparty,
+      7 rows), `gs-015` account `ACC-00002` (active credit card, non-NULL credit_limit)
+- [x] Result rows carry `question` and `answer`, so a JSON reads without the fixture
+- [x] **18/18 green 2026-08-26** — AGG tool 1.00 / args 1.00 / faith 1.00 / relev 1.00 /
+      corr 1.00, $0.0060 per request, **p95 3742ms** (the measured LATENCY_BUDGET_MS)
+
+### The suite was green and meaningless — four bugs found by making it honest
+
+Every one of these PASSED before it was fixed. None would have failed loudly.
+
+| what | why it passed | fix |
+|---|---|---|
+| `gs-002` cards | ACC-00004 has 0 cards — empty result is trivially faithful | moved to `refuse`; `gs-015` does the real card test |
+| `gs-006/007/016` | **CUS-00012 has 0 accounts and 0 loans** — three cases scoring 1.00 against empty tool results | repointed to `CUS-00034` (5 accounts, 1 loan) |
+| `gs-018` relevance 0.70 | judge marked down a clarifying question; relevance had no carve-out for unanswerable questions, though faithfulness always had one | added the carve-out to the judge prompt |
+| `gs-016` tool 0.50 | expected `[list_accounts, check_balance]`, but `list_accounts` already returns balance per row — the fixture demanded the exact waste `tool_correctness` penalises | `expect_tools: [list_accounts]`, shape `multi` → `single` |
+
+**A case whose data goes empty keeps PASSING — it does not fail.** That is the argument for
+the preflight fixture check below, and it is a better interview answer than "I built an eval
+suite": the suite was green three times while asserting nothing.
+
+Coverage gap this leaves: `gs-008` is now the ONLY genuine `multi` case (single 10 / refuse 4 /
+memory 3 / multi 1). Multi-tool sequencing is a real failure mode and one case is thin.
 
 ### Open
 
@@ -420,6 +454,14 @@ custom results store; nobody hand-rolls one.
 
 - [ ] Push the 18 golden cases as a Langfuse Dataset (idempotent, safe to re-run)
 - [ ] Each eval run becomes a dataset run; scores attach per item
+- [ ] **Make Nova's `trace_id` BE the Langfuse trace ID.** Today `app.py:264` mints its own
+      UUID and passes it as plain metadata, so pasting it into Langfuse's trace search
+      returns nothing — it is findable only via a Metadata filter. `langfuse_session_id`
+      works because that key IS predefined; `trace_id` is not. Fix: `uuid.uuid4().hex`
+      (32 hex, no dashes) and `CallbackHandler(trace_context={"trace_id": ...})`, which
+      means building the handler per request instead of once at startup (`app.py:196`).
+      Cheap, but it changes the response contract, so it ships with the dataset-run work
+      and one rebuild rather than on its own.
 - [ ] verify: compare view with a baseline shows per-item green/red deltas on score, cost and
       latency; the Charts tab plots average score across runs
 
