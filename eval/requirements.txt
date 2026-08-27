@@ -1,6 +1,8 @@
 # What the eval RUNNER IMAGE installs. Not for local work — that is requirements-dev.txt.
 # Deliberately excludes langchain/mcp: the instrument must not share the agent's dep tree,
 # or one resolver change moves both at once.
-anthropic>=0.40
-httpx==0.28.*
-pyyaml==6.*
+# Exact pins, matching the venv that produced the 18/18 baseline. `anthropic>=0.40`
+# resolved to 1.1.0 — a major bump onto a different HTTP stack (httpx2), untested here.
+anthropic==0.122.0
+httpx==0.28.1
+pyyaml==6.0.3

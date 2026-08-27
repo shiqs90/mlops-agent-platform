@@ -4,7 +4,7 @@ Living to-do tracker. Update the checkbox and date when a step lands. Design rat
 `IMPLEMENTATION-PLAN.md`; the interview-facing summary is `README.md`. This file is just
 "what's done, what's next."
 
-Last updated: 2026-08-25
+Last updated: 2026-08-28
 
 **Rescoped 2026-08-15/16** — from a DistilBERT/banking77 classifier pipeline to an MLOps
 platform for a tool-calling agent, where evaluation is the deployment gate. GitOps delivery was
@@ -45,7 +45,22 @@ project. The gating half (Argo Rollouts + CI) stays open as 4b.
 
 ---
 
-# CORE BUILD (~45.5h)
+# CORE BUILD (~47.5h) — ~39h done (82%), ~8.5h left as of 2026-08-27
+
+| remaining | est |
+|---|---|
+| Install Argo Rollouts, first sync, `Rollout` replaces the Deployment | 1h |
+| Build the eval image, commit its real tag | 0.5h |
+| **Verify both gates — promote path AND abort path** | 2h |
+| Debug (first time with a new controller) | 1.5h |
+| Judge calibration | 0.5h |
+| Phase 2.5 — PII masking + human approval | 2h |
+| Phase 5.6 — Langfuse dataset runs | 1h |
+
+If a deadline forces a cut, Phase 2.5 and Langfuse come out without damaging the story —
+floor is ~5.5h. **Do not compress the 2h on verification:** proving the ABORT path is the
+demo. Anyone can show a green deploy; showing a deliberately broken prompt caught and rolled
+back unattended is what the whole project has been building toward.
 
 End state: a working agent with its safety controls in place (PII masking, approval on writes),
 plus an automated evaluation service that scores it on demand and on a schedule, and alerts when
@@ -217,7 +232,7 @@ its first `.inc()`, so `nova_requests_total` is absent from `/metrics` on a fres
 the unlabelled `nova_cost_usd_total` already reads 0.0. An absent series and a zero series mean
 different things.
 
-## Phase 4 — GitOps delivery (~9h) — 4a DONE 2026-08-24, 4b OPEN
+## Phase 4 — GitOps delivery (~11h) — 4a + 4b DONE, 4c manifests written
 
 **The phase that makes evaluation an actual deployment gate.** Until this lands, the Hub
 produces a verdict but nothing consumes it.
@@ -264,11 +279,19 @@ lives outside the pod. On the in-process fallback, turn 2 would miss its history
 landed on the other replica. `nova_memory_persistent` is the gauge standing between the
 platform and that.
 
-### 4b — Progressive delivery + CI (~5h) — CI DONE 2026-08-26, rollouts OPEN
+### 4b — CI build-and-deploy (~2h) — DONE 2026-08-27
 
-- [x] `.github/workflows/build-and-deploy.yml` — path-filtered matrix builds `nova` and
-      `mcp-servers` via Cloud Build, `yq`-bumps the tag in `charts/nova/values.yaml`,
-      commits. **CI holds no Kubernetes credential**; the commit is the deploy.
+- [x] `.github/workflows/build-and-deploy.yml` — path-filtered matrix builds `nova`,
+      `mcp-servers` and `eval` via Cloud Build, `yq`-bumps the tag in
+      `charts/nova/values.yaml`, commits. **CI holds no Kubernetes credential**; the
+      commit is the deploy.
+- [x] **Build and deploy are separate triggers.** `push` builds and stops; only a manual
+      `workflow_dispatch` commits the tag. A tag commit starts a rollout that runs both
+      gates and costs ~$0.27 in tokens, so auto-deploying every prompt tweak spends that.
+      Building on push stays free and works with the node pool at zero.
+- [x] **Tag derived from the commit** (`<commit-date>-<sha7>`), not from `date` at run
+      time, plus a registry existence check before building. A deploy therefore reuses the
+      image the push already built — build once, deploy that same artifact.
 - [x] `terraform-gcp/cicd.tf` — `gha-cicd` SA and roles. Key minted out-of-band, NOT by
       Terraform (`google_service_account_key` would put it in HCP state in plaintext).
       Long-lived key is an accepted tradeoff; WIF migration path documented in the file.
@@ -277,34 +300,55 @@ platform and that.
 - [x] War stories #21–23 recorded (deployed-image drift, bucket-vs-object IAM, green build
       reported red)
 
-**Argo Rollouts CUT to E5 on 2026-08-27 (~5h saved).** It was the last unstarted heavy piece
-— new controller, new CRD, Deployment→Rollout conversion, AnalysisTemplates — and the gate it
-buys is reachable for ~1h with what is already here.
+### 4c — Argo Rollouts blue-green + both gates (~5h) — manifests written 2026-08-27
 
-### 4c — Post-deploy gate, rollback by `git revert` (~1h) — OPEN
+**Cut, then reinstated the same day.** It was cut as the last unstarted heavy piece, with a
+`git revert` gate proposed as a 1h substitute. Reinstated because the JD names it —
+*"blue/green and canary rollout strategies for ML models"* — and because industry sources are
+explicit that a bad model version reaching 100% of traffic is exactly what progressive
+delivery exists to prevent. The revert substitute limits exposure; it does not prevent it.
+
+**Why Argo Rollouts over Flagger:** Flagger is Flux-native and needs a service mesh for traffic
+splitting. Rollouts is from the Argo ecosystem already installed and does blue-green without a
+mesh. On a 2-node cluster with no Istio that is decisive. Running Argo CD **and** Argo Rollouts
+together is the canonical pairing, not redundancy — CD syncs the `Rollout` manifest, Rollouts
+decides promote or abort.
 
 ```
-merge -> CI builds, commits tag -> Argo CD deploys
-                                        |
-       CI waits ~2 min, queries Prometheus for eval score / error rate
-                                        |
-                     bad? -> git revert the values.yaml commit -> Argo CD rolls back
+Rollout pauses
+  |- prePromotionAnalysis   -> JOB provider: replay the golden set against nova-preview.
+  |                            No traffic at risk. Fail = never promoted.
+  |- promote                -> active Service switches. 100% traffic on the new version.
+  \- postPromotionAnalysis  -> JOB fires 20 synthetic requests, then PROMETHEUS measures
+                               error rate + p95. Fail = abort, active switches back.
 ```
 
-**The rollback mechanism is `git revert`.** CI reverts a commit and Argo CD does the rest —
-same path as a forward deploy, so CI still needs no cluster credential. That property is what
-made cutting Rollouts cheap.
+- [x] `charts/nova/templates/analysis.yaml` — both AnalysisTemplates
+- [x] `charts/nova/templates/nova.yaml` — `Deployment` → `Rollout`, `nova-preview` Service
+- [x] `eval/Dockerfile`, `requirements.txt`, `requirements.lock` — the runner image
+- [ ] Install the Argo Rollouts controller (**CRDs must exist before Argo CD syncs the chart**,
+      or the sync fails with `no matches for kind "Rollout"` — same lesson as the ESO
+      v1/v1beta1 war story)
+- [ ] Build the eval image, commit its real tag over `REPLACE_AFTER_FIRST_BUILD`
+- [ ] verify: **promote path** — a good change passes both gates unattended
+- [ ] verify: **abort path** — a deliberately bad prompt fails pre-promotion and never takes
+      traffic. This is the demo; the promote path proves much less.
 
-- [ ] CI step: after the tag commit, poll Prometheus for `nova_eval_score` and Nova's error rate
-- [ ] CI step: on breach, `git revert --no-edit <tag commit>` and push
-- [ ] verify: a deliberately bad prompt merges, deploys, is detected, and is reverted with no
-      `kubectl` and no human
+**Three things known in advance, so they are not mistaken for bugs:**
 
-**What this gives up vs Rollouts, and know this cold** — Rollouts keeps the old version serving
-while the new one is analysed, so a bad version never takes traffic. Here the bad version serves
-100% of traffic for the detection window (~2 min analysis + up to 3 min for Argo CD to see the
-revert). **Rollouts prevents exposure; this limits its duration.** Correct trade for a lab with
-no users; wrong trade with real ones, which is why E5 stays on the list rather than being deleted.
+1. **A placeholder eval tag does not break the sync.** An `AnalysisTemplate` is a definition,
+   not a workload — no pod, no image pull. It bites when the first `AnalysisRun` is created.
+2. **Argo Rollouts skips analysis on the INITIAL rollout.** There is no previous version to
+   promote from, so the first sync just deploys. Gates engage on the next image change.
+3. **`scaleDownDelaySeconds: 600`.** Abort works by switching the active Service back to the
+   old ReplicaSet. If it has already scaled down there is nothing to switch to and rollback
+   becomes a cold redeploy.
+
+**Post-promotion needs traffic that does not exist here**, hence the synthetic-load Job — 20
+requests, ~$0.12 per rollout. Its `successCondition` is `len(result) > 0 && ...`, deliberately
+NOT the defensive `len(result) == 0 || ...` idiom: we generate the traffic ourselves, so an
+empty result means the load Job failed and must not read as success. With no traffic at all, a
+post-promotion gate either always passes or always blocks — it tells you nothing about the code.
 
 ## Phase 5 — Evaluation Hub (~9.5h) — NEXT
 
@@ -452,19 +496,32 @@ memory 3 / multi 1). Multi-tool sequencing is a real failure mode and one case i
 
 ### Open
 
-- [ ] Run `README-placeholders.sql`, fill `SEARCH_TERM` (gs-014) and `ACC-WITH-CARDS` (gs-015)
+- [x] Placeholders resolved — `gs-014` → `Talabat`, `gs-015` → `ACC-00002`
+- [x] Runner image — `eval/Dockerfile`, same `run_eval.py`, no fork. Fixture ships INSIDE the
+      image so an image tag identifies one exact suite. `ENTRYPOINT` carries no `--target`,
+      so the same image scores live Nova or a rollout's preview Service.
+- [x] `eval/requirements.txt` + `.lock` — **pinned to `anthropic==0.122.0`**, the version the
+      18/18 baseline ran on. `>=0.40` had resolved to `1.1.0`, a major bump onto a different
+      HTTP stack (`httpx2`). Third time resolution picked something untested; see war story #10.
+- [x] Two container-only bugs fixed before they shipped: `--set` now resolves against
+      `__file__` (`eval/golden/...` only works from the repo root), and `--out-dir` was added
+      because `/app` is root-owned while the image runs as uid 10001 — the write would have
+      failed *after* a paid run completed.
+- [x] `eval` added to the CI matrix — dir `eval` → image `nova-eval` → key `images.eval.tag`
 - [ ] **Judge calibration** — hand-label the 18 cases once, measure agreement with Haiku,
       record the number in the README. Everyone says "I use LLM-as-a-judge"; almost nobody can
       answer *"how do you know your judge is right?"*, and it is the standard follow-up. Also
       settles the open question of whether Haiku grades `refuse` noisily, with data.
-- [ ] Runner image — same `run_eval.py`, no fork
-- [ ] `Job` + `CronJob` manifests in `charts/nova` (**not** a self-deleting Job — see 4a)
-- [ ] Pushgateway: `prometheus-pushgateway.enabled: true` on kube-prometheus-stack
-- [ ] GitHub Actions offline workflow — PR touching `nova/` or `eval/` runs the suite
-- [ ] PrometheusRule on `nova_eval_score` thresholds (absorbs old Phase 5.5)
-- [ ] Empty regression set scaffolded
-- [ ] verify: `kubectl create job --from=cronjob/nova-eval` → 6 scores in the log, same in
-      Prometheus, exit code non-zero on a seeded failure
+- [ ] verify: the eval runs as a `Job` in-cluster and reproduces the local 18/18
+
+**Pushgateway and the scheduled CronJob are NOT needed for the gate** — decided 2026-08-27.
+`prePromotionAnalysis` uses the Argo Rollouts **job provider**, which reads the exit code
+directly, so scores never have to reach Prometheus for a deploy to be gated. Pushgateway
+remains the right answer for *drift alerting on a schedule*, and moves to E6 with the CronJob
+and the `PrometheusRule`. Dropped from the critical path, not from the plan.
+
+- [ ] *(E6)* Pushgateway + `CronJob` scheduled replay + `PrometheusRule` on score thresholds
+- [ ] *(E6)* Empty regression set scaffolded
 
 ### Phase 5.6 — Langfuse dataset runs (~1h) — AFTER Phase 5 is signed off
 
@@ -507,7 +564,19 @@ step. Live-traffic scoring stays out; that is E2 and it is genuinely different w
 
 ---
 
-# ENHANCEMENTS (~17h)
+# ENHANCEMENTS (~19h)
+
+## E6 — Scheduled drift detection (~2h)
+
+*Split out of Phase 5 on 2026-08-27 once the gate stopped needing Prometheus.* The job
+provider gates deploys on an exit code; this is the separate question of "did quality drift
+while nobody deployed anything".
+
+- [ ] Pushgateway (`prometheus-pushgateway.enabled: true` on kube-prometheus-stack) — a Job
+      dies before Prometheus scrapes it, so it posts its scores to a permanent target instead
+- [ ] `CronJob` running the eval image nightly against live Nova (~$0.15/run, ~$4.50/month)
+- [ ] `PrometheusRule` alerting on `nova_eval_score` thresholds
+- [ ] Empty regression set scaffolded — failures found here get promoted into it
 
 ## E2 — Drift Tier 2, live-traffic scoring (~4h)
 
