@@ -20,3 +20,7 @@ images:
   mcp:
     repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/mcp-servers
     tag: "20260817-1148-lock"
+  # The eval runner. Built by CI from eval/, same as the other two.
+  eval:
+    repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova-eval
+    tag: "REPLACE_AFTER_FIRST_BUILD"

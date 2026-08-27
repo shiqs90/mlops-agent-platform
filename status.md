@@ -277,12 +277,34 @@ platform and that.
 - [x] War stories #21–23 recorded (deployed-image drift, bucket-vs-object IAM, green build
       reported red)
 
-- [ ] Argo Rollouts blue-green; **set `scaleDownDelaySeconds` to several minutes**
-- [ ] `prePromotionAnalysis` — quality **and** cost via Prometheus provider
-- [ ] `postPromotionAnalysis` — live metrics
-- [ ] GitHub Actions: contract checks → commit manifest → smoke test
-- [ ] verify: prompt change ships with no `kubectl`; bad prompt blocked + auto-rolled-back;
-      token-wasteful prompt blocked by the **cost** gate while passing quality
+**Argo Rollouts CUT to E5 on 2026-08-27 (~5h saved).** It was the last unstarted heavy piece
+— new controller, new CRD, Deployment→Rollout conversion, AnalysisTemplates — and the gate it
+buys is reachable for ~1h with what is already here.
+
+### 4c — Post-deploy gate, rollback by `git revert` (~1h) — OPEN
+
+```
+merge -> CI builds, commits tag -> Argo CD deploys
+                                        |
+       CI waits ~2 min, queries Prometheus for eval score / error rate
+                                        |
+                     bad? -> git revert the values.yaml commit -> Argo CD rolls back
+```
+
+**The rollback mechanism is `git revert`.** CI reverts a commit and Argo CD does the rest —
+same path as a forward deploy, so CI still needs no cluster credential. That property is what
+made cutting Rollouts cheap.
+
+- [ ] CI step: after the tag commit, poll Prometheus for `nova_eval_score` and Nova's error rate
+- [ ] CI step: on breach, `git revert --no-edit <tag commit>` and push
+- [ ] verify: a deliberately bad prompt merges, deploys, is detected, and is reverted with no
+      `kubectl` and no human
+
+**What this gives up vs Rollouts, and know this cold** — Rollouts keeps the old version serving
+while the new one is analysed, so a bad version never takes traffic. Here the bad version serves
+100% of traffic for the detection window (~2 min analysis + up to 3 min for Argo CD to see the
+revert). **Rollouts prevents exposure; this limits its duration.** Correct trade for a lab with
+no users; wrong trade with real ones, which is why E5 stays on the list rather than being deleted.
 
 ## Phase 5 — Evaluation Hub (~9.5h) — NEXT
 

@@ -321,7 +321,13 @@ def main() -> None:
     global NOVA_URL   # must precede any use of NOVA_URL in this function
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--set", default="eval/golden/questions.yaml")
+    # Resolved against THIS FILE, not the working directory. `eval/golden/...` only
+    # works when run from the repo root; in the image the script sits at /app.
+    ap.add_argument("--set", default=os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "golden", "questions.yaml"))
+    # The container runs as uid 10001 and /app is root-owned, so the default "." is
+    # unwritable there. The Job passes --out-dir /tmp.
+    ap.add_argument("--out-dir", default=".")
     ap.add_argument("--target", default=NOVA_URL)
     ap.add_argument("--limit", type=int, default=0, help="run only the first N cases")
     args = ap.parse_args()
@@ -457,7 +463,7 @@ def main() -> None:
         "cases": n, "failed": len(failures), "budget_breaches": budget_breaches,
     }
 
-    out = f"eval-results-{run_id}.json"
+    out = os.path.join(args.out_dir, f"eval-results-{run_id}.json")
     with open(out, "w") as f:
         json.dump({**summary, "results": results}, f, indent=2)
     print(f"\nwrote {out}")

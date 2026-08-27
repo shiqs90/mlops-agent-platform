@@ -1,0 +1,109 @@
+# Rollout gates. Two stages, two providers, because they answer different questions.
+#
+#   prePromotionAnalysis  -> job provider  -> replay the golden set against the PREVIEW
+#                            service. No traffic is at risk; a failure means the new
+#                            version never becomes active.
+#   postPromotionAnalysis -> job + prometheus -> generate synthetic traffic against the
+#                            now-live version, then measure what real requests did.
+#                            A failure here aborts and switches the active Service back.
+---
+# --- PRE-PROMOTION: the golden set --------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: nova-eval-gate
+  namespace: nova
+spec:
+  args:
+    - name: target-service        # nova-preview here; the image bakes in no target
+  metrics:
+    - name: golden-set
+      count: 1                    # one replay, not a poll — the dataset is fixed
+      failureLimit: 0             # any failing case blocks promotion
+      provider:
+        job:
+          spec:
+            backoffLimit: 0       # a retry would just re-run a deterministic failure
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: eval
+                    image: "{{ .Values.images.eval.repository }}:{{ .Values.images.eval.tag }}"
+                    args:
+                      - "--target"
+                      - "http://{{ "{{ args.target-service }}" }}.nova.svc.cluster.local:8000"
+                      - "--out-dir"
+                      - "/tmp"     # /app is root-owned and the image runs as uid 10001
+                    env:
+                      - name: ANTHROPIC_API_KEY
+                        valueFrom:
+                          secretKeyRef: {name: anthropic-api-key, key: api-key}
+---
+# --- POST-PROMOTION: synthetic traffic, then measure it ------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: nova-live-gate
+  namespace: nova
+spec:
+  metrics:
+    # Metrics run in PARALLEL. This one starts immediately and produces the samples
+    # the query below needs; `initialDelay` on that one is what sequences them.
+    - name: synthetic-load
+      count: 1
+      failureLimit: 0
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: load
+                    image: curlimages/curl:8.11.1
+                    command: ["/bin/sh", "-c"]
+                    # 20 requests ~= $0.12 of tokens per rollout. Deliberately small:
+                    # enough for a rate() window to be non-empty, not enough to matter.
+                    args:
+                      - |
+                        for i in $(seq 1 20); do
+                          curl -s -m 60 -X POST http://nova.nova.svc.cluster.local:8000/chat \
+                            -H 'content-type: application/json' \
+                            -d "{\"session_id\":\"canary-$i\",\"message\":\"What is the balance on account ACC-00004?\"}" \
+                            -o /dev/null -w "%{http_code}\n"
+                          sleep 2
+                        done
+
+    - name: error-rate
+      initialDelay: 90s           # the load job needs ~60s to produce 20 requests
+      interval: 30s
+      count: 3
+      failureLimit: 1             # one bad sample tolerated, the second aborts
+      # len(result) > 0 AND under threshold. NOT the defensive
+      # `len(result) == 0 || ...` idiom: we generate the traffic ourselves, so an
+      # empty result means the load job failed, and that must not read as success.
+      successCondition: len(result) > 0 && result[0] < 0.05
+      provider:
+        prometheus:
+          address: http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(nova_requests_total{status!="ok"}[2m]))
+            /
+            sum(rate(nova_requests_total[2m]))
+
+    - name: latency-p95
+      initialDelay: 90s
+      interval: 30s
+      count: 3
+      failureLimit: 1
+      # 8s, well above the 3.7s p95 measured on the golden set. A gate set at the
+      # observed value fires on normal variance and gets switched off.
+      successCondition: len(result) > 0 && result[0] < 8
+      provider:
+        prometheus:
+          address: http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.95,
+              sum(rate(nova_request_duration_seconds_bucket[2m])) by (le))

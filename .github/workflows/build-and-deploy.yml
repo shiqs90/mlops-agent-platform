@@ -1,8 +1,16 @@
-# Build changed images, commit the new tag to charts/nova/values.yaml. That commit IS the
-# deploy — Argo CD sees it and rolls the pods. CI never touches the Kubernetes API.
+# CI's whole job -- build an image, write a tag. CI never touches the Kubernetes API.
 #
-# No loop: triggers watch nova/** and mcp-servers/**; the bot commit touches
-# charts/nova/values.yaml, which matches neither.
+# BUILD AND DEPLOY ARE SEPARATE TRIGGERS:
+#   push              -> build + push to the registry. Stops there.
+#   workflow_dispatch -> build, then commit the tag, which IS the deploy.
+#
+# The tag commit starts an Argo Rollouts rollout with both gates, costing ~$0.27 in
+# tokens per run (eval Job + synthetic load). Auto-deploying every prompt tweak spends
+# that. Building on push stays free, still catches a broken Dockerfile or lockfile
+# immediately, and works with the node pool scaled to zero.
+#
+# No loop: triggers watch source dirs; the bot commit touches charts/nova/values.yaml,
+# which matches none of them.
 name: build-and-deploy
 
 on:
@@ -11,13 +19,14 @@ on:
     paths:
       - 'nova/**'
       - 'mcp-servers/**'
+      - 'eval/**'
   workflow_dispatch:
     inputs:
       images:
-        description: 'Force a rebuild: nova, mcp-servers, or both'
+        description: 'Build AND deploy which image?'
         default: nova
         type: choice
-        options: [nova, mcp-servers, both]
+        options: [nova, mcp-servers, eval, all]
 
 env:
   PROJECT_ID: mlops-lifecycle-p7-gke
@@ -46,13 +55,15 @@ jobs:
             case "${{ inputs.images }}" in
               nova)        dirs="nova" ;;
               mcp-servers) dirs="mcp-servers" ;;
-              *)           dirs="nova mcp-servers" ;;
+              eval)        dirs="eval" ;;
+              *)           dirs="nova mcp-servers eval" ;;
             esac
           else
             dirs=""
             files=$(git diff --name-only HEAD^ HEAD)
             echo "$files" | grep -q '^nova/'        && dirs="$dirs nova"        || true
             echo "$files" | grep -q '^mcp-servers/' && dirs="$dirs mcp-servers" || true
+            echo "$files" | grep -q '^eval/'        && dirs="$dirs eval"        || true
           fi
 
           # Directory name != values.yaml key (mcp-servers -> images.mcp), so map explicitly.
@@ -61,6 +72,7 @@ jobs:
             case "$d" in
               nova)        entries="$entries {\"dir\":\"nova\",\"key\":\"nova\",\"image\":\"nova\"}," ;;
               mcp-servers) entries="$entries {\"dir\":\"mcp-servers\",\"key\":\"mcp\",\"image\":\"mcp-servers\"}," ;;
+              eval)        entries="$entries {\"dir\":\"eval\",\"key\":\"eval\",\"image\":\"nova-eval\"}," ;;
             esac
           done
 
@@ -88,18 +100,29 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - id: tag
-        # Date for humans, short SHA so a running pod traces back to the exact commit.
-        run: echo "tag=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        # Derived from the COMMIT, not from `date` at run time, so the same commit always
+        # yields the same tag. That is what lets a deploy reuse the image the push built
+        # instead of rebuilding it -- build once, deploy that same artifact.
+        run: |
+          echo "tag=$(git log -1 --format=%cd --date=format:%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      # Needs roles/viewer on the SA — gcloud refuses to stream Cloud Build's default
-      # logs bucket otherwise, and exits 1 on a build that actually succeeded.
+      # Skips the build when this commit's image already exists — which is the normal
+      # case for a deploy, since the push already built it.
+      # Needs roles/viewer on the SA: gcloud refuses to stream Cloud Build's default logs
+      # bucket otherwise, and exits 1 on a build that actually succeeded.
       - name: Build and push
         run: |
-          gcloud builds submit ${{ matrix.dir }}/ \
-            --tag "${REGISTRY}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}" \
-            --project "${PROJECT_ID}"
+          set -euo pipefail
+          ref="${REGISTRY}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}"
+          if gcloud artifacts docker images describe "$ref" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "$ref already exists — reusing it, not rebuilding"
+          else
+            gcloud builds submit ${{ matrix.dir }}/ --tag "$ref" --project "${PROJECT_ID}"
+          fi
 
+      # DEPLOY STEP -- manual dispatch only. A push builds and stops before this.
       - name: Bump the chart and push
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           yq -i '.images.${{ matrix.key }}.tag = "${{ steps.tag.outputs.tag }}"' charts/nova/values.yaml
@@ -116,11 +139,12 @@ jobs:
 
       - name: Summary
         run: |
-          {
-            echo "### Deployed \`${{ matrix.image }}\` → \`${{ steps.tag.outputs.tag }}\`"
-            echo ""
-            echo "Argo CD applies within ~3 min. Verify:"
-            echo '```'
-            echo "kubectl -n nova rollout status deploy/${{ matrix.image }}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "### Deployed \`${{ matrix.image }}\` → \`${{ steps.tag.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Argo CD syncs within ~3 min, then Argo Rollouts runs both gates:" >> "$GITHUB_STEP_SUMMARY"
+            echo '`kubectl argo rollouts get rollout nova -n nova --watch`' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Built \`${{ matrix.image }}\` → \`${{ steps.tag.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Not deployed** — the chart still points at the old tag. To ship it:" >> "$GITHUB_STEP_SUMMARY"
+            echo '`gh workflow run build-and-deploy.yml -f images=${{ matrix.dir }}`' >> "$GITHUB_STEP_SUMMARY"
+          fi

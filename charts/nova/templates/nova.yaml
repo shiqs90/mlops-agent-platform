@@ -3,10 +3,8 @@
 # Apply through sed, same as the connectors:
 #   sed "s|IMAGE_TAG|$TAG|g" k8s/nova.yaml | kubectl apply -f -
 #
-# Plain Deployment for now. In E1 this becomes an Argo Rollouts blue-green Rollout
-# with the evaluation as its promotion gate — that swap is the whole point of the
-# project, so it is deliberately NOT anticipated here. A Rollout with no analysis
-# attached would look like progress while proving nothing.
+# Argo Rollouts blue-green since 2026-08-27. The Rollout owns both Service selectors:
+# `active` serves users, `preview` serves the new version while it is being judged.
 ---
 apiVersion: v1
 kind: Service
@@ -16,14 +14,27 @@ metadata:
   labels:
     app: nova              # the ServiceMonitor selects on THIS, not on pod labels
 spec:
-  selector: {app: nova}
+  # No `selector` here on purpose — the Rollout controller writes it, pointing at the
+  # active ReplicaSet's pod-template-hash. Setting it by hand fights the controller.
   ports:
     # Named port. A ServiceMonitor endpoint references a port by name; an unnamed
     # port cannot be targeted and the scrape silently never happens.
     - {name: http, port: 8000, targetPort: 8000}
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova-preview
+  namespace: nova
+  # Deliberately NOT labelled `app: nova`: the ServiceMonitor selects on that label,
+  # and scraping the preview would blend a candidate's metrics into the live series
+  # that postPromotionAnalysis then queries.
+spec:
+  ports:
+    - {name: http, port: 8000, targetPort: 8000}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: nova
   namespace: nova
@@ -31,6 +42,26 @@ spec:
   replicas: 1
   selector:
     matchLabels: {app: nova}
+  strategy:
+    blueGreen:
+      activeService: nova
+      previewService: nova-preview
+      # Keep the old ReplicaSet alive after promotion. Abort works by switching the
+      # active Service back to it — if it has already been scaled down there is
+      # nothing to switch to, and "rollback" becomes a cold redeploy.
+      scaleDownDelaySeconds: 600
+      # Judge the candidate on the preview Service, before it takes any traffic.
+      prePromotionAnalysis:
+        templates:
+          - templateName: nova-eval-gate
+        args:
+          - name: target-service
+            value: nova-preview
+      # Then check what real requests actually did, once it is live.
+      postPromotionAnalysis:
+        templates:
+          - templateName: nova-live-gate
+      autoPromotionEnabled: true    # gates decide, not a human clicking promote
   template:
     metadata:
       labels: {app: nova}

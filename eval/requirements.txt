@@ -1,0 +1,6 @@
+# What the eval RUNNER IMAGE installs. Not for local work — that is requirements-dev.txt.
+# Deliberately excludes langchain/mcp: the instrument must not share the agent's dep tree,
+# or one resolver change moves both at once.
+anthropic>=0.40
+httpx==0.28.*
+pyyaml==6.*
