@@ -42,3 +42,8 @@ output "node_service_account" {
   description = "Least-privilege node SA — deliberately NOT the Compute Engine default (which holds project Editor)."
   value       = google_service_account.node.email
 }
+
+output "cicd_service_account" {
+  description = "GitHub Actions build identity. Mint a key against this and store it as the repo secret GCP_SA_KEY — see cicd.tf for why the key is not created by Terraform."
+  value       = google_service_account.cicd.email
+}

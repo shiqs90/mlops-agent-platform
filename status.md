@@ -240,8 +240,8 @@ produces a verdict but nothing consumes it.
 ### 4a — Argo CD sync — DONE 2026-08-24
 
 Pulled ahead of Phase 2.5/5 deliberately: the phases that remain are the most manifest-heavy
-in the project (CRD, RBAC, controller Deployment, runner Job, CronJob, PrometheusRule), which
-is the worst possible time to still be applying by hand.
+in the project (Rollout, preview Service, two AnalysisTemplates, runner Job), which is the
+worst possible time to still be applying by hand.
 
 - [x] Argo CD installed via Helm, **chart pinned 10.4.0 → v3.5.1**. dex + notifications
       disabled; `applicationSet.enabled: false` does NOT exist in 10.x and was silently
@@ -352,27 +352,11 @@ post-promotion gate either always passes or always blocks — it tells you nothi
 
 ## Phase 5 — Evaluation Hub (~9.5h) — NEXT
 
-**Redesigned 2026-08-25 after checking the design against what the field actually does**
-(Langfuse, LangChain, Arize, Promptfoo all converge on the same shape). Two decisions came
-out of it, both reversals:
+**Designed 2026-08-25 against what the field actually does** — Langfuse, LangChain, Arize and
+Promptfoo all converge on the same shape, and nothing here is bespoke.
 
-**1. NO `EvaluationRun` CRD, NO kopf controller.** The CRD existed to give eval runs a
-control plane. But two control planes already consume the verdict — GitHub Actions for the
-pre-merge gate, Argo Rollouts `AnalysisTemplate` for the promotion gate — so the CRD would
-have been a third whose only consumers are the other two. A controller earns its keep when
-it reconciles ONGOING state; an eval run starts, scores, and exits, and Kubernetes already
-ships the primitive for that. A kopf operator whose whole body is "watch CR → create Job →
-patch status" reimplements `Job` with extra RBAC. Where CRD-driven eval orchestration does
-exist in the wild, it is because Argo Workflows or Kubeflow *already is* the operator.
-Saved ~3.5h. **The interview answer is the rejection, not the artifact** — controller-pattern
-credibility already comes from operating Argo CD, ESO, and Rollouts.
-
-**2. Scores reach Prometheus via Pushgateway.** Prometheus PULLS every ~30s; an eval Job
-lives ~2 minutes, so it may never be scraped, and the series dies with the pod. Pushgateway
-is a permanent target the Job POSTs to on its way out — the one use case the Prometheus docs
-endorse it for. Know the caveat: it is WRONG for services, because a pushed metric outlives
-its source and "is it up?" becomes unanswerable. Correct for a job that exists to leave a
-result behind.
+The eval runs as a plain Kubernetes `Job`. It starts, scores, exits — and the exit code is the
+verdict, which is all any consumer needs.
 
 ### The tie-up — one runner, three consumers
 
@@ -382,21 +366,19 @@ eval/golden/questions.yaml   (git = the dataset version)
             v
       run_eval.py            (one runner, same code locally and in-cluster)
             |
-  +---------+-----------------+--------------------+
-  v         v                 v                    v
-exit code  Pushgateway   Langfuse scores      results JSON
-  |            |               |
-  v            v               v
-GitHub     Prometheus     per-case trend + one click to the trace
-Actions      |     |
-(merge   Rollouts  PrometheusRule
- gate)   Analysis   (drift alert)
-         (promote
-          gate)
+  +---------+-------------------+-------------------+
+  v         v                   v                   v
+exit code  exit code       Langfuse scores     results JSON
+  |         |                    |
+  v         v                    v
+GitHub   Argo Rollouts    per-case trend + one click to the trace
+Actions  prePromotion
+(merge   Analysis
+ gate)   (promote gate)
 ```
 
-This is the industry three-layer shape: **offline/CI** on PR, **scheduled** sweeps, **online**
-sampling (E2). Nothing here is bespoke.
+Both gates read the **same signal** — a non-zero exit. That is why `run_eval.py` was written
+to exit non-zero from the start, and why neither gate needs Prometheus.
 
 ### Metrics — six, three of them judged, ONE judge call
 
