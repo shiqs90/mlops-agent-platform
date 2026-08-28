@@ -564,13 +564,32 @@ step. Live-traffic scoring stays out; that is E2 and it is genuinely different w
 
 ---
 
-# ENHANCEMENTS (~19h)
+# ENHANCEMENTS (~5h)
 
-## E6 — Scheduled drift detection (~2h)
+## E4 — Hardening (~5h)
+
+- [ ] Break it at all five stages, document each diagnosis path
+- [ ] Verify teardown commands
+- [ ] Final README pass
+
+---
+
+# PARKED — drift monitoring + model registry (~14h)
+
+Grouped 2026-08-28. These are the MLflow / drift-tracking items, pulled out of the
+enhancement list so the remaining core work is not read alongside them.
+
+Not deleted, because two things here are directly asked for in the JD — *"model registries,
+experiment tracking"* and *"observability for ... system health"* — and because the
+infrastructure they need already exists in this cluster. If they get built in a separate
+project instead, that project starts by rebuilding Postgres, GCS, Prometheus and a serving
+layer that are already running here. Worth weighing before starting fresh.
+
+## P-E6 — Scheduled drift detection (~2h)
 
 *Split out of Phase 5 on 2026-08-27 once the gate stopped needing Prometheus.* The job
 provider gates deploys on an exit code; this is the separate question of "did quality drift
-while nobody deployed anything".
+while nobody deployed anything". **Closest to done — everything it needs already exists.**
 
 - [ ] Pushgateway (`prometheus-pushgateway.enabled: true` on kube-prometheus-stack) — a Job
       dies before Prometheus scrapes it, so it posts its scores to a permanent target instead
@@ -578,7 +597,9 @@ while nobody deployed anything".
 - [ ] `PrometheusRule` alerting on `nova_eval_score` thresholds
 - [ ] Empty regression set scaffolded — failures found here get promoted into it
 
-## E2 — Drift Tier 2, live-traffic scoring (~4h)
+## P-E2 — Drift Tier 2, live-traffic scoring (~4h)
+
+Depends on P-E6's regression set existing.
 
 - [ ] Sample production traces, score `faithfulness` + `answer_relevance`
       (both reference-free — that is exactly why live traffic can be scored at all)
@@ -587,21 +608,17 @@ while nobody deployed anything".
 - [ ] verify: a question shape absent from the golden set appears in sampled scores and lands
       in the regression set
 
-## E3 — Cheap router: train a classifier to replace the LLM for tool selection (~8h)
+## P-E3 — Model registry + cheap router (~8h)
 
-*Model distillation — a small "student" model trained on the LLM "teacher's" past decisions.*
+*Model distillation — a small "student" model trained on the LLM "teacher's" past decisions.
+This is where MLflow lives: the registry and experiment tracking only become real once there
+is a trained artifact to register, which is why it was never in the core build.*
 
 - [ ] Export eval-passing traces → `(question, tool_chosen)` training set
 - [ ] In-cluster training Job (PyTorch / HF Transformers)
 - [ ] MLflow + Postgres backend + GCS artifacts (registry + experiment tracking)
 - [ ] Nova routes via classifier above a confidence threshold, falls back to Claude
 - [ ] verify: promotes only if `tool_correctness` ≥ Claude baseline; record cost-per-request delta
-
-## E4 — Hardening (~5h)
-
-- [ ] Break it at all five stages, document each diagnosis path
-- [ ] Verify teardown commands
-- [ ] Final README pass
 
 ## Notes
 
