@@ -80,7 +80,7 @@ spec:
       initialDelay: 90s           # the load job needs ~60s to produce 20 requests
       interval: 30s
       count: 3
-      failureLimit: 1             # one bad sample tolerated, the second aborts
+      failureLimit: 1             # one Bad sample tolerated, the second aborts
       # len(result) > 0 AND under threshold. NOT the defensive
       # `len(result) == 0 || ...` idiom: we generate the traffic ourselves, so an
       # empty result means the load job failed, and that must not read as success.
