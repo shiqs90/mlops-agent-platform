@@ -88,7 +88,7 @@ variable "authorized_cidr" {
       terraform apply
   EOT
   type        = string
-  default     = "86.98.166.216/32"   # rotated 2026-08-24
+  default     = "92.98.4.137/32"   # rotated 2026-08-30
 }
 
 variable "machine_type" {
