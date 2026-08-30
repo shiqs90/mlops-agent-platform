@@ -13,7 +13,7 @@
 images:
   nova:
     repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova
-    tag: "20260829-a0cb95e"
+    tag: "20260830-d3606ee"
   # One image, three Deployments. accounts, transactions, and products are separate
   # entrypoints into the same container, so they promote together by construction —
   # there is no way to leave one connector on a stale build.
