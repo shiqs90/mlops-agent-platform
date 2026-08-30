@@ -81,15 +81,19 @@ spec:
       interval: 30s
       count: 3
       failureLimit: 1             # one Bad sample tolerated, the second aborts
-      # len(result) > 0 AND under threshold. NOT the defensive
-      # `len(result) == 0 || ...` idiom: we generate the traffic ourselves, so an
-      # empty result means the load job failed, and that must not read as success.
+      # `or vector(0)` on the numerator is load-bearing. A labelled counter does not
+      # exist until its first increment, so with zero errors the series is absent and
+      # sum() returns EMPTY, not 0 — empty/anything is empty, and the gate failed a
+      # rollout because Nova behaved perfectly (2026-08-29).
+      #
+      # len(result) > 0 still earns its place: if the load job dies, the DENOMINATOR is
+      # empty too, the whole expression is empty, and the gate correctly fails.
       successCondition: len(result) > 0 && result[0] < 0.05
       provider:
         prometheus:
           address: http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
           query: |
-            sum(rate(nova_requests_total{status!="ok"}[2m]))
+            (sum(rate(nova_requests_total{status!="ok"}[2m])) or vector(0))
             /
             sum(rate(nova_requests_total[2m]))
 
