@@ -38,13 +38,19 @@ def query_transactions(account_id: str, start_date: str, end_date: str,
     if category and category not in CATEGORIES:
         return {"error": f"Unknown category '{category}'", "valid_categories": CATEGORIES}
 
-    sql = ("SELECT txn_id, txn_date, amount, direction, category, description, counterparty"
-           " FROM transactions WHERE account_id = %s AND txn_date BETWEEN %s AND %s")
+    # `currency` is joined from accounts, not selected from transactions, because the
+    # transactions table has no currency column. Without it the agent stated "AED" from
+    # its own context and eval caught it as an unsupported claim (gs-003, rev 3).
+    # An amount without a unit is incomplete data.
+    sql = ("SELECT t.txn_id, t.txn_date, t.amount, a.currency, t.direction, t.category,"
+           " t.description, t.counterparty"
+           " FROM transactions t JOIN accounts a ON a.account_id = t.account_id"
+           " WHERE t.account_id = %s AND t.txn_date BETWEEN %s AND %s")
     params: list = [account_id, start_date, end_date]
     if category:
-        sql += " AND category = %s"
+        sql += " AND t.category = %s"
         params.append(category)
-    sql += " ORDER BY txn_date DESC LIMIT %s"
+    sql += " ORDER BY t.txn_date DESC LIMIT %s"
     params.append(min(limit, 200))
 
     with cursor() as cur:

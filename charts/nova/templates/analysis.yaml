@@ -81,6 +81,10 @@ spec:
       interval: 30s
       count: 3
       failureLimit: 1             # one Bad sample tolerated, the second aborts
+      # `pending_approval` is excluded, not counted as an error: a write paused for
+      # human approval is the middleware working, not a failure. Without this a
+      # transfer in the synthetic load would abort its own rollout.
+      #
       # `or vector(0)` on the numerator is load-bearing. A labelled counter does not
       # exist until its first increment, so with zero errors the series is absent and
       # sum() returns EMPTY, not 0 — empty/anything is empty, and the gate failed a
@@ -93,7 +97,7 @@ spec:
         prometheus:
           address: http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
           query: |
-            (sum(rate(nova_requests_total{status!="ok"}[2m])) or vector(0))
+            (sum(rate(nova_requests_total{status!~"ok|pending_approval"}[2m])) or vector(0))
             /
             sum(rate(nova_requests_total[2m]))
 

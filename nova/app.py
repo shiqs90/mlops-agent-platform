@@ -3,7 +3,7 @@
 FastAPI + LangChain agent over three MCP connectors, with Redis-backed session memory.
 
 RUNAWAY PROTECTION. An agent loop with no ceiling will call tools until something
-else stops it — usually your bill. Four independent limits, because each catches a
+else stops it — usually bill. Four independent limits, because each catches a
 different failure and any one of them alone has a gap:
 
   1. RECURSION_LIMIT   — total graph steps per request. The hard stop on loops.
@@ -32,8 +32,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware, PIIMiddleware
 from langchain_anthropic import ChatAnthropic
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.types import Command
 
 # ---------------------------------------------------------------------------
 # Configuration — every limit is an env var so it can be tuned without a rebuild
@@ -94,8 +96,8 @@ state: dict = {}
 # Prometheus metrics
 #
 # Langfuse and Prometheus answer different questions and neither replaces the other:
-#   Langfuse   "what happened in THIS request"      — traces, for debugging
-#   Prometheus "what's happening across ALL of them" — metrics, for alerting
+#   Langfuse   "what happened in THIS request"       — traces, for Debugging
+#   Prometheus "what's happening across ALL of them" — metrics, for Alerting
 #
 # Only an aggregate can gate a rollout, which is why E1's Argo Rollouts analysis
 # reads Prometheus and not Langfuse.
@@ -159,7 +161,7 @@ async def lifespan(app: FastAPI):
     # Checkpointer = session memory. Redis so a pod restart doesn't drop every
     # in-flight conversation. Falls back to in-memory if Redis is unreachable —
     # degraded (memory dies with the pod) but the service still answers, which is
-    # the right tradeoff for a memory store rather than a system of record.
+    # the right tradeoff for a memory store.
     # AsyncRedisSaver, not RedisSaver. The sync saver's async methods (aget_tuple,
     # aput) are unimplemented on the base class, so every request through
     # agent.ainvoke() dies with a bare NotImplementedError — and `str()` on that is
@@ -206,6 +208,28 @@ async def lifespan(app: FastAPI):
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
         checkpointer=checkpointer,
+        middleware=[
+            # Only the write tool pauses. Every read tool runs untouched, which is why
+            # the 18-case golden set is unaffected by this.
+            HumanInTheLoopMiddleware(interrupt_on={"initiate_transfer": True}),
+
+            # apply_to_tool_results is the flag that matters here: it defaults to
+            # False, and the PII we care about arrives FROM get_customer — full_name,
+            # email, phone — none of which the agent needs to answer anything. Setting
+            # it redacts the ToolMessage in before_model, so the model, the traces, and
+            # the checkpointed transcript never carry the address.
+            #
+            # apply_to_input stays at its default of True, so user messages are scanned
+            # too. Harmless for the golden set — every case keys on an account ID like
+            # ACC-00004, which an email detector cannot match — but it does mean a user
+            # who types an email gets a placeholder passed to any tool expecting one.
+            # No current MCP tool takes an email argument; revisit if one does.
+            #
+            # email only: the built-in types are email/credit_card/ip/mac_address/url.
+            # A phone regex is tractable; full_name is not, and a name detector that
+            # misses half of them is worse than not claiming one. See README.
+            PIIMiddleware("email", strategy="redact", apply_to_tool_results=True),
+        ],
     )
     state["tool_names"] = [t.name for t in tools]
 
@@ -328,6 +352,25 @@ async def chat(req: ChatRequest):
                 "detail": f"{type(exc).__name__}: {exc}"[:500],
                 "session_id": req.session_id}
 
+    # The graph paused instead of finishing. HumanInTheLoopMiddleware raised an
+    # interrupt before initiate_transfer executed, so NO MONEY HAS MOVED — the balances
+    # are unchanged and can be checked to prove it.
+    #
+    # State is checkpointed in Redis under thread_id == session_id, so session_id IS
+    # the resume token. Nothing extra to store or expire.
+    if "__interrupt__" in result:
+        REQUESTS.labels(status="pending_approval").inc()
+        LATENCY.observe(time.monotonic() - started)
+        pending = [i.value for i in result["__interrupt__"]]
+        log.info("trace_id=%s PAUSED for approval: %s", trace_id, pending)
+        return {
+            "trace_id": trace_id,
+            "session_id": req.session_id,
+            "status": "pending_approval",
+            "pending": pending,
+            "resume_with": "POST /approve {session_id, decision: approve|reject}",
+        }
+
     messages = result["messages"]
 
     # Only this turn's messages. `messages` is the full thread; `turn` is the slice
@@ -393,5 +436,104 @@ async def chat(req: ChatRequest):
         "turn_messages": len(turn),
         "history_messages": len(messages),
         "latency_ms": latency_ms,
+        "model": AGENT_MODEL,
+    }
+
+
+class ApprovalRequest(BaseModel):
+    session_id: str
+    decision: str = "approve"      # approve | reject  (edit/respond exist, unused here)
+    reason: str = ""               # surfaced to the agent on reject
+
+
+@app.post("/approve")
+async def approve(req: ApprovalRequest):
+    """Resume a conversation paused waiting for approval on a write.
+
+    Nova is request/response with no UI, so approval is a second call rather than a
+    button. `session_id` needs no lookup table: LangGraph keyed the paused state on
+    thread_id == session_id in Redis, so replaying it is the whole mechanism.
+
+    Rejecting does not error — the tool is skipped and the agent is told why, so it
+    can answer the customer instead of failing.
+    """
+    trace_id = str(uuid.uuid4())
+    started = time.monotonic()
+
+    if req.decision not in ("approve", "reject"):
+        return {"trace_id": trace_id, "error": "bad_decision",
+                "detail": "decision must be 'approve' or 'reject'"}
+
+    config = {
+        "configurable": {"thread_id": req.session_id},
+        "recursion_limit": RECURSION_LIMIT,
+    }
+    if "langfuse_handler" in state:
+        config["callbacks"] = [state["langfuse_handler"]]
+        config["metadata"] = {"langfuse_session_id": req.session_id,
+                              "langfuse_tags": [AGENT_MODEL, f"decision:{req.decision}"],
+                              "trace_id": trace_id}
+
+    snapshot = await state["agent"].aget_state(config)
+    if not snapshot or not snapshot.next:
+        # `next` is empty when the graph is not paused. Distinguish "already resumed or
+        # never paused" from a genuine failure — replaying an approval must not
+        # silently run the transfer a second time.
+        return {"trace_id": trace_id, "error": "nothing_pending",
+                "detail": f"session {req.session_id} is not awaiting approval",
+                "session_id": req.session_id}
+
+    prior_len = len(snapshot.values.get("messages", []))
+
+    decision: dict = {"type": req.decision}
+    if req.decision == "reject" and req.reason:
+        decision["message"] = req.reason
+
+    try:
+        import asyncio
+        result = await asyncio.wait_for(
+            state["agent"].ainvoke(Command(resume=[decision]), config=config),
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as exc:
+        REQUESTS.labels(status="error").inc()
+        log.exception("trace_id=%s approve failed", trace_id)
+        return {"trace_id": trace_id, "error": "error",
+                "detail": f"{type(exc).__name__}: {exc}"[:500],
+                "session_id": req.session_id}
+
+    messages = result["messages"]
+    turn = messages[prior_len:]
+
+    tool_calls, tool_results = [], []
+    for m in turn:
+        for call in getattr(m, "tool_calls", []) or []:
+            tool_calls.append({"tool": call["name"], "args": call["args"]})
+        if getattr(m, "type", "") == "tool":
+            tool_results.append({"tool": getattr(m, "name", "unknown"),
+                                 "result": m.content if isinstance(m.content, str)
+                                 else str(m.content)})
+
+    answer = messages[-1].content
+    if isinstance(answer, list):
+        answer = " ".join(b.get("text", "") for b in answer if isinstance(b, dict))
+
+    elapsed = time.monotonic() - started
+    REQUESTS.labels(status="ok").inc()
+    LATENCY.observe(elapsed)
+    for c in tool_calls:
+        TOOL_CALLS.labels(tool=c["tool"]).inc()
+
+    log.info("trace_id=%s decision=%s tools=%s", trace_id, req.decision,
+             [t["tool"] for t in tool_calls])
+
+    return {
+        "trace_id": trace_id,
+        "session_id": req.session_id,
+        "decision": req.decision,
+        "answer": answer,
+        "tool_calls": tool_calls,
+        "tool_results": tool_results,
+        "latency_ms": round(elapsed * 1000),
         "model": AGENT_MODEL,
     }

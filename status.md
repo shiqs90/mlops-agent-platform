@@ -45,22 +45,19 @@ project. The gating half (Argo Rollouts + CI) stays open as 4b.
 
 ---
 
-# CORE BUILD (~47.5h) — ~39h done (82%), ~8.5h left as of 2026-08-27
+# CORE BUILD (~47.5h) — ~44h done (**93%**), ~3.5h left as of 2026-08-31
+
+The delivery pipeline is complete and proven end to end: CI builds → git holds the tag →
+Argo CD syncs → Argo Rollouts gates on the golden set → promotes or rolls back unattended.
 
 | remaining | est |
 |---|---|
-| Install Argo Rollouts, first sync, `Rollout` replaces the Deployment | 1h |
-| Build the eval image, commit its real tag | 0.5h |
-| **Verify both gates — promote path AND abort path** | 2h |
-| Debug (first time with a new controller) | 1.5h |
-| Judge calibration | 0.5h |
-| Phase 2.5 — PII masking + human approval | 2h |
+| **Phase 2.5 — PII masking + human approval on `initiate_transfer`** | 2h |
+| Judge calibration — hand-label 18, measure agreement with Haiku | 0.5h |
 | Phase 5.6 — Langfuse dataset runs | 1h |
 
-If a deadline forces a cut, Phase 2.5 and Langfuse come out without damaging the story —
-floor is ~5.5h. **Do not compress the 2h on verification:** proving the ABORT path is the
-demo. Anyone can show a green deploy; showing a deliberately broken prompt caught and rolled
-back unattended is what the whole project has been building toward.
+Nothing left is load-bearing for the core story. Phase 2.5 closes the last real gap: a live,
+unguarded write path.
 
 End state: a working agent with its safety controls in place (PII masking, approval on writes),
 plus an automated evaluation service that scores it on demand and on a schedule, and alerts when
@@ -300,7 +297,7 @@ platform and that.
 - [x] War stories #21–23 recorded (deployed-image drift, bucket-vs-object IAM, green build
       reported red)
 
-### 4c — Argo Rollouts blue-green + both gates (~5h) — manifests written 2026-08-27
+### 4c — Argo Rollouts blue-green + both gates (~5h) — **DONE 2026-08-30**
 
 **Cut, then reinstated the same day.** It was cut as the last unstarted heavy piece, with a
 `git revert` gate proposed as a 1h substitute. Reinstated because the JD names it —
@@ -326,13 +323,34 @@ Rollout pauses
 - [x] `charts/nova/templates/analysis.yaml` — both AnalysisTemplates
 - [x] `charts/nova/templates/nova.yaml` — `Deployment` → `Rollout`, `nova-preview` Service
 - [x] `eval/Dockerfile`, `requirements.txt`, `requirements.lock` — the runner image
-- [ ] Install the Argo Rollouts controller (**CRDs must exist before Argo CD syncs the chart**,
-      or the sync fails with `no matches for kind "Rollout"` — same lesson as the ESO
-      v1/v1beta1 war story)
-- [ ] Build the eval image, commit its real tag over `REPLACE_AFTER_FIRST_BUILD`
-- [ ] verify: **promote path** — a good change passes both gates unattended
-- [ ] verify: **abort path** — a deliberately bad prompt fails pre-promotion and never takes
-      traffic. This is the demo; the promote path proves much less.
+- [x] Argo Rollouts controller installed — chart **pinned 2.41.1 → v1.9.1**, cluster-scoped,
+      2 replicas with leader election (only the lease holder reconciles; a second *install*
+      would fight, two replicas of one Deployment do not)
+- [x] Eval image built and its real tag committed over `REPLACE_AFTER_FIRST_BUILD`
+- [x] verify: **promote path** — revision 4 passed both gates unattended and went
+      `stable,active`. Post-promotion `✔ 7` = 1 synthetic-load + 3 error-rate + 3 latency.
+- [x] verify: **abort path, POST-promotion** — revision 2 passed pre, failed post
+      (`✔ 3, ✗ 2`), active Service switched back to revision 1 with no human involved
+- [x] verify: **abort path, PRE-promotion** — revision 3's golden set failed, the new
+      ReplicaSet never became active and **never took traffic**
+
+**All three paths exercised on real runs**, which is the demo. Most progressive-delivery
+write-ups only show the happy path.
+
+**Two bugs the gates found, both in things we built rather than in Nova:**
+
+1. **The error-rate query failed a rollout because Nova was perfect** (revision 2).
+   `sum(rate(nova_requests_total{status!="ok"}[2m]))` over zero errors returns EMPTY, not 0 —
+   a labelled counter does not exist until its first increment, so `{status!="ok"}` matched no
+   series and `empty / anything = empty`. Fixed with `or vector(0)` on the numerator. The
+   `status.md` Phase 3 note *"an absent series and a zero series mean different things"* was
+   written about `/metrics` output three weeks earlier and bit inside a PromQL gate.
+2. **`gs-003` failed faithfulness on `['AED currency assumption']`** (revision 3) — see **E5**.
+   A real catch, and the source of intermittent gate flakiness.
+
+**Measured, not assumed:** post-promotion p95 came back at **2.55s** against the 8s gate.
+The golden set measures 3.7s because it mixes question shapes; the synthetic load repeats one
+simple question, so it is faster. Two different numbers, both correct.
 
 **Three things known in advance, so they are not mistaken for bugs:**
 
@@ -546,7 +564,39 @@ step. Live-traffic scoring stays out; that is E2 and it is genuinely different w
 
 ---
 
-# ENHANCEMENTS (~5h)
+# ENHANCEMENTS (~5.5h)
+
+## E5 — Return `currency` from every money-returning tool (~0.5h)
+
+**Found by the gate on 2026-08-30, revision 3.** `gs-003` failed `faithfulness` with
+`unsupported: ['AED currency assumption']` — the agent wrote "AED" from its own context
+because `query_transactions` returned bare amounts. The judge was right: an amount with no
+unit is incomplete data, and filling that gap by assumption is exactly the failure
+faithfulness exists to catch. In a multi-currency bank it is a live bug.
+
+`query_transactions` was fixed (joins `accounts` for `currency`). Four remain, and the API
+is inconsistent as a result — two account tools already return currency, five money-returning
+tools do not:
+
+| tool | money field | currency? |
+|---|---|---|
+| `check_balance`, `list_accounts` | balance, overdraft | yes |
+| `query_transactions` | amount | **fixed 2026-08-31** |
+| `spending_by_category` | `SUM(amount)` | no — gs-004 |
+| `find_transactions` | amount | no — gs-014 |
+| `get_cards` | `credit_limit` | no — gs-015 |
+| `get_loans` | principal, outstanding | no — gs-006 |
+| `initiate_transfer` | balance | no — not eval-covered until Phase 2.5 |
+
+- [ ] Join `accounts` for `currency` in the four remaining eval-covered tools
+- [ ] Rebuild `mcp-servers`, deploy, re-run the suite
+
+**Why this matters more than a formatting nit: it is GATE FLAKINESS.** The agent states the
+currency only sometimes — revision 4 passed the identical 18 cases that revision 3 failed. So
+four cases can intermittently block a good deploy. Fixing the judge instead would have been
+the wrong move: it would teach the metric to tolerate the exact class of unsupported claim it
+exists to find. **A gate that blocks good deploys at an unknown rate is a gate that gets
+`|| true`'d within a month** — this is the top item to close before trusting it.
 
 ## E4 — Hardening (~5h)
 

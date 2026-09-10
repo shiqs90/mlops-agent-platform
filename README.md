@@ -94,6 +94,34 @@ the tradeoffs behind each choice: [docs/architecture-gke.md](docs/architecture-g
 ## Tracing
 ![Langfuse tracing](docs/diagrams/langfuse-tracing.png)
 
+## PII redaction
+
+`PIIMiddleware` decides *which messages get scanned*, not just what counts as PII. Three
+independent switches, and the defaults are not the interesting ones:
+
+| Flag | Default | What it scans | When it runs |
+|---|---|---|---|
+| `apply_to_input` | `True` | `HumanMessage` — what the customer typed | `before_model` |
+| `apply_to_output` | `False` | `AIMessage` — model text and tool-call arguments | `after_model` |
+| `apply_to_tool_results` | `False` | `ToolMessage` — what the MCP tools returned | `before_model`, on messages after the last `AIMessage` |
+
+Nova sets `apply_to_tool_results=True` and leaves the rest at their defaults, so **input and
+tool results are both scanned; model output is not.**
+
+`apply_to_tool_results` is the one that earns its keep. The PII in this system arrives *from*
+`get_customer` — `full_name`, `email`, `phone` — none of which the agent needs to answer a
+balance or transaction question. Redacting the `ToolMessage` before the model sees it means the
+address never reaches the prompt, the Langfuse trace, or the checkpointed session in Redis.
+
+`apply_to_input` is inherited rather than chosen. It costs nothing on the golden set — every
+case keys on an account ID like `ACC-00004`, which the email detector's regex cannot match — but
+it does mean a customer who types their own email hands a placeholder to any tool expecting one.
+No current MCP tool takes an email argument; revisit if one does.
+
+Scope is `email` only. The built-in detectors are email, credit card, IP, MAC address, and URL. A
+phone regex would be tractable; `full_name` is not, and a name detector that misses half of them
+is worse than not claiming one.
+
 ## The five gates
 
 | Gate | Runs in | Against | Catches |
