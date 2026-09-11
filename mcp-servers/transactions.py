@@ -86,7 +86,11 @@ def spending_by_category(account_id: str, start_date: str, end_date: str) -> dic
         )
         rows = jsonable(cur.fetchall())
 
-    return {"account_id": account_id, "start_date": start_date, "end_date": end_date,
+        cur.execute("SELECT currency FROM accounts WHERE account_id = %s", (account_id,))
+        acct = cur.fetchone()
+
+    return {"account_id": account_id, "currency": acct["currency"] if acct else None,
+            "start_date": start_date, "end_date": end_date,
             "total_spent": round(sum(r["total"] for r in rows), 2), "by_category": rows}
 
 
@@ -105,10 +109,11 @@ def find_transactions(account_id: str, search_term: str, limit: int = 20) -> dic
     """
     with cursor() as cur:
         cur.execute(
-            "SELECT txn_id, txn_date, amount, direction, category, description, counterparty"
-            " FROM transactions"
-            " WHERE account_id = %s AND (description ILIKE %s OR counterparty ILIKE %s)"
-            " ORDER BY txn_date DESC LIMIT %s",
+            "SELECT t.txn_id, t.txn_date, t.amount, a.currency, t.direction, t.category,"
+            " t.description, t.counterparty"
+            " FROM transactions t JOIN accounts a ON a.account_id = t.account_id"
+            " WHERE t.account_id = %s AND (t.description ILIKE %s OR t.counterparty ILIKE %s)"
+            " ORDER BY t.txn_date DESC LIMIT %s",
             (account_id, f"%{search_term}%", f"%{search_term}%", min(limit, 100)),
         )
         rows = jsonable(cur.fetchall())

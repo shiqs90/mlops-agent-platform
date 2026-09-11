@@ -105,7 +105,8 @@ def initiate_transfer(from_account: str, to_account: str, amount: float,
 
     with cursor() as cur:
         cur.execute(
-            "SELECT balance, overdraft_limit, status FROM accounts WHERE account_id = %s",
+            "SELECT balance, overdraft_limit, status, currency"
+            " FROM accounts WHERE account_id = %s",
             (from_account,),
         )
         src = one(cur.fetchall())
@@ -134,13 +135,13 @@ def initiate_transfer(from_account: str, to_account: str, amount: float,
             (from_account, amount, amount, from_account, to_account),
         )
         cur.execute(
-            "SELECT account_id, balance FROM accounts WHERE account_id IN (%s, %s)",
+            "SELECT account_id, balance, currency FROM accounts WHERE account_id IN (%s, %s)",
             (from_account, to_account),
         )
         balances = jsonable(cur.fetchall())
 
-    return {"status": "completed", "amount": amount, "reference": reference,
-            "balances": balances}
+    return {"status": "completed", "amount": amount, "currency": src["currency"],
+            "reference": reference, "balances": balances}
 
 
 if __name__ == "__main__":

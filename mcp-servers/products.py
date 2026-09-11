@@ -28,8 +28,10 @@ def get_cards(account_id: str) -> dict:
     """
     with cursor() as cur:
         cur.execute(
-            "SELECT card_id, card_type, last_four, status, expiry, credit_limit"
-            " FROM cards WHERE account_id = %s ORDER BY card_type",
+            "SELECT c.card_id, c.card_type, c.last_four, c.status, c.expiry,"
+            " c.credit_limit, a.currency"
+            " FROM cards c JOIN accounts a ON a.account_id = c.account_id"
+            " WHERE c.account_id = %s ORDER BY c.card_type",
             (account_id,),
         )
         rows = jsonable(cur.fetchall())
@@ -57,7 +59,15 @@ def get_loans(customer_id: str) -> dict:
         )
         rows = jsonable(cur.fetchall())
 
+        # `loans` has no currency column and no account_id, so it is inferred from the
+        # customer's accounts — null when they disagree, rather than guessing.
+        cur.execute(
+            "SELECT DISTINCT currency FROM accounts WHERE customer_id = %s", (customer_id,)
+        )
+        currencies = [r["currency"] for r in cur.fetchall()]
+
     return {"customer_id": customer_id, "count": len(rows),
+            "currency": currencies[0] if len(currencies) == 1 else None,
             "total_outstanding": round(sum(r["outstanding"] for r in rows), 2),
             "loans": rows}
 

@@ -588,7 +588,16 @@ tools do not:
 | `get_loans` | principal, outstanding | no — gs-006 |
 | `initiate_transfer` | balance | no — not eval-covered until Phase 2.5 |
 
-- [ ] Join `accounts` for `currency` in the four remaining eval-covered tools
+- [x] **All eight money-returning tools fixed 2026-09-11.** `query_transactions`,
+      `find_transactions`, `get_cards` join `accounts`; `spending_by_category` returns
+      currency once at the top rather than per row (one account, one currency — repeating
+      it per category is tokens the model pays for every turn); `initiate_transfer` carries
+      it alongside `amount`, which matters most because that is the tool that moves money.
+- [x] **Schema gap found and stated rather than hidden:** `loans` has no `currency` column
+      AND no `account_id` — it references `customer_id` directly, so a loan's currency is
+      recorded nowhere. `get_loans` infers it from the customer's accounts and returns
+      **null when they disagree**. An absent unit beats a confidently wrong one — which is
+      the entire lesson of this bug family. Real fix is `ALTER TABLE loans`.
 - [ ] Rebuild `mcp-servers`, deploy, re-run the suite
 
 **Why this matters more than a formatting nit: it is GATE FLAKINESS.** The agent states the
