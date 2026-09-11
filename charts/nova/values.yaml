@@ -23,4 +23,4 @@ images:
   # The eval runner. Built by CI from eval/, same as the other two.
   eval:
     repository: us-west1-docker.pkg.dev/mlops-lifecycle-p7-gke/mlops-lifecycle/nova-eval
-    tag: "20260910-c05ff12"
+    tag: "20260911-f57dd37"
